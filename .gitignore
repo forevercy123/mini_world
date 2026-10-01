@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# 本地快照备份
+.snapshots/
+
+# Node / Vite
+node_modules/
+dist/
+*.local
+
+# 日志
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 编辑器
+.idea/
+.vscode/
