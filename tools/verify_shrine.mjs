@@ -94,12 +94,20 @@ const run = async () => {
       window.__playerHealth.refill()
     })()`)
     await sleep(400)
-    await browser.keyDown('KeyQ', 'q', 81)
-    await browser.keyUp('KeyQ', 'q', 81)
-    await sleep(120) // 无敌帧内
-    await evalV(`window.__damagePlayer(1, new (window.__player.position.constructor)(3, 0, 3))`)
-    await sleep(200)
-    const flurry = await evalV(`window.__isFlurry()`)
+    // 无敌帧只有 0.22s，高负载下 sleep 不精确：反复尝试直到落在窗口里
+    let flurry = false
+    for (let i = 0; i < 6 && !flurry; i++) {
+      await browser.keyDown('KeyQ', 'q', 81)
+      await browser.keyUp('KeyQ', 'q', 81)
+      await sleep(90)
+      const invuln = await evalV(`window.__player.isInvulnerable`)
+      if (invuln) {
+        await evalV(`window.__damagePlayer(1, new (window.__player.position.constructor)(3, 0, 3))`)
+        await sleep(200)
+        flurry = await evalV(`window.__isFlurry()`)
+      }
+      if (!flurry) await sleep(600) // 等闪避完全结束再来
+    }
     ok(flurry === true, '完美闪避触发子弹时间')
 
     // ── 6. 蓄力斩：按住 J 到点放旋风斩，背后的敌人也挨打 ──
