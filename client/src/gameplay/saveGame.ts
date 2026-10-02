@@ -63,6 +63,10 @@ export interface SaveData {
   weapons?: { slots?: Array<{ id: WeaponId; durability: number }>; current?: number }
   /** 已被拔走的武器点编号。旧存档按"都在原地"处理 */
   weaponSpawnsTaken?: number[]
+  /** 已通关的神庙 id。旧存档按"都没打过"处理 */
+  shrines?: string[]
+  /** 心之容器撑起来的生命上限。旧存档缺省为初始 6 */
+  maxHearts?: number
 }
 
 /** 存档是否可用的判断结果 */

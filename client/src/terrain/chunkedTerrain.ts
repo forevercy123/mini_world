@@ -23,6 +23,8 @@ import {
   Vector3,
 } from 'three'
 import { WATER_LEVEL, shadeVertex, type Heightfield } from './heightfield.ts'
+import { colorFactors } from './biome.ts'
+import type { RoadNetwork } from '../world/roads.ts'
 
 export interface TerrainConfig {
   /** 每块的世界尺寸（米） */
@@ -49,6 +51,9 @@ export const DEFAULT_TERRAIN_CONFIG: TerrainConfig = {
   // 露底，看起来就是地面上的一条黑缝——加到 12 米才稳。
   skirtDepth: 12,
 }
+
+/** 土路颜色：晒暖的夯土黄，比草地暗、比沙滩深 */
+const ROAD_COLOR = new Color(0x9c7f56)
 
 interface ChunkRecord {
   mesh: Mesh
@@ -78,7 +83,12 @@ export class ChunkedTerrain {
   /** 统计：本帧实际重建了几块，用于观察流式加载是否跟得上 */
   lastRebuilt = 0
 
-  constructor(hf: Heightfield, config: Partial<TerrainConfig> = {}) {
+  constructor(
+    hf: Heightfield,
+    config: Partial<TerrainConfig> = {},
+    /** 道路网络：路面顶点染土色。可选，没路的场景（测试）不传 */
+    private readonly roads?: RoadNetwork,
+  ) {
     this.hf = hf
     this.config = { ...DEFAULT_TERRAIN_CONFIG, ...config }
     this.material = new MeshLambertMaterial({ vertexColors: true })
@@ -280,7 +290,22 @@ export class ChunkedTerrain {
         const dz = (hU - hD) / (2 * step)
         const slope = 1 - 1 / Math.sqrt(1 + dx * dx + dz * dz)
 
-        shadeVertex(h, slope, color)
+        // 群系配色：区域与高度一起决定这块地的颜色。
+        // 染色强度在这里采一次（顶点世界坐标处），草地与散布读的
+        // 是同一个函数，三方不会对不上
+        const wx0 = originX + ix * step
+        const wz0 = originZ + iy * step
+        shadeVertex(h, slope, color, colorFactors(wx0, wz0, h))
+
+        // 路面染色：离路中心线 2.3 米内染土色，边缘渐变。
+        // 路是玩家的向导——它必须在草地上"读得出一条线"
+        if (this.roads && this.roads.segmentCount > 0) {
+          const rd = this.roads.distance(wx0, wz0)
+          if (rd < 3.1) {
+            const k = 1 - smoothstep01(rd, 1.6, 3.1)
+            color.lerp(ROAD_COLOR, k * 0.72)
+          }
+        }
 
         // 加两个尺度的噪声扰动。
         //

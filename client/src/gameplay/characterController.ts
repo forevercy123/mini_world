@@ -293,6 +293,12 @@ export class CharacterController {
     return this.state === 'air' || this.state === 'glide'
   }
 
+  /**
+   * 本帧是否被障碍物顶住了去路。由 updateWalk 的碰撞推出记录，
+   * 是"对着柱子走"攀爬触发的前置条件——没被挡住就谈不上"抱住柱子"
+   */
+  blockedByObstacle = false
+
   update(
     dt: number,
     input: MoveInput,
@@ -320,8 +326,13 @@ export class CharacterController {
     //
     // 这是塞尔达式垂直移动的核心：地图上每根柱子都是潜在的路。判定放在
     // 状态切换之后，这样它只在"这一帧确实是地面状态"时才生效，不会把
-    // 刚跳起来的人吸到树上
-    if (!switched && this.state === 'ground' && input.forward > 0.25) {
+    // 刚跳起来的人吸到树上。
+    //
+    // 触发前提是**这一帧真的被障碍物挡住了**（updateWalk 里碰撞推出
+    // 把位移顶了回来）。少了这一条，从两棵树中间穿过、或者贴着树
+    // 擦过去时，只要朝向夹角小于 60° 就会被"吸"到树上——玩家在
+    // 空地上走得好好的，突然开始爬空气
+    if (!switched && this.state === 'ground' && input.forward > 0.25 && this.blockedByObstacle) {
       // 判定裕量只给 0.1 米：必须真的贴住柱子。
       //
       // 碰撞推出会把角色停在 `障碍半径 + 身体半径` 处，所以只要裕量是正的
@@ -333,7 +344,7 @@ export class CharacterController {
         this.config.radius,
         0.1,
       )
-      // 还得确实朝着它。少了这一条，从旁边擦过去也会被吸住
+      // 还得确实朝着它。收到 41° 锥以内：侧面擦过的树不算
       const facing = post
         ? (() => {
             const toX = post.x - this.position.x
@@ -343,7 +354,7 @@ export class CharacterController {
           })()
         : 0
 
-      if (post && facing > 0.5) {
+      if (post && facing > 0.75) {
         this.state = 'climb'
         this.stateChanged = true
         this.climbPost = post
@@ -559,6 +570,8 @@ export class CharacterController {
       // 推出障碍物。放在水平位移之后、垂直处理之前——
       // 如果先算垂直，角色会被塞进树里再修正，视觉上会闪一下。
       if (this.obstacles) {
+        const beforeX = this.position.x
+        const beforeZ = this.position.z
         const fixed = this.obstacles.resolve(
           this.position.x,
           this.position.z,
@@ -567,6 +580,10 @@ export class CharacterController {
         )
         this.position.x = fixed.x
         this.position.z = fixed.z
+        // 本帧是否真的被障碍顶住了（期望位移与实际位移的差）。
+        // 攀爬只在这种"想走走不动"的时刻才允许触发
+        const pushed = Math.hypot(fixed.x - beforeX, fixed.z - beforeZ)
+        this.blockedByObstacle = pushed > 0.01
       }
     }
 

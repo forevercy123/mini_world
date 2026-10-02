@@ -32,6 +32,7 @@ export type WeaponId =
   | 'axe1h'
   | 'sword2h'
   | 'axe2h'
+  | 'crossbow'
 
 /**
  * 招式组：决定用哪一套挥砍动画。
@@ -40,7 +41,7 @@ export type WeaponId =
  * 在和一把看不见的剑搏斗。stab 单独一组是因为突刺的预备姿势
  * 和挥砍完全不同。
  */
-export type Moveset = '1h' | '2h' | 'stab'
+export type Moveset = '1h' | '2h' | 'stab' | 'shoot'
 
 export interface WeaponDef {
   id: WeaponId
@@ -141,6 +142,19 @@ export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
     rarity: 'epic',
     desc: '战场上的凶器。慢，但挨一下就是重伤',
   },
+  crossbow: {
+    id: 'crossbow',
+    name: '猎手弩',
+    model: '/assets/weapons/crossbow_1handed.gltf',
+    moveset: 'shoot',
+    damage: 2,
+    durability: 24,
+    duration: 0.62,
+    range: 26,
+    knockback: 6,
+    rarity: 'rare',
+    desc: '猎人的伙伴。远处的猎物与敌人都逃不过一箭',
+  },
 }
 
 /** 空手格斗的参数。武器全碎时的兜底，永远可用 */
@@ -171,6 +185,8 @@ export const WEAPON_SLOTS_MAX = 4
 export class WeaponBag {
   private readonly slots: WeaponSlot[] = []
   private currentIndex = 0
+  /** 箭矢弹药池：全部远程武器共用一个弹药数，和塞尔达的箭一样 */
+  arrows = 0
   /** 每次变动自增，供 UI 判断是否需要重绘 */
   version = 0
 
@@ -243,14 +259,15 @@ export class WeaponBag {
     return 'broken'
   }
 
-  toSave(): { slots: WeaponSlot[]; current: number } {
+  toSave(): { slots: WeaponSlot[]; current: number; arrows: number } {
     return {
       slots: this.slots.map((s) => ({ ...s })),
       current: this.currentIndex,
+      arrows: this.arrows,
     }
   }
 
-  restore(data: { slots?: WeaponSlot[]; current?: number } | undefined): void {
+  restore(data: { slots?: WeaponSlot[]; current?: number; arrows?: number } | undefined): void {
     this.slots.length = 0
     if (data?.slots) {
       for (const s of data.slots) {
@@ -263,6 +280,7 @@ export class WeaponBag {
       this.slots.push({ id: 'branch', durability: WEAPON_DEFS.branch.durability })
     }
     this.currentIndex = Math.min(data?.current ?? 0, this.slots.length - 1)
+    this.arrows = Math.max(0, Math.floor(data?.arrows ?? 0))
     this.version++
   }
 }

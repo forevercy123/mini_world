@@ -35,8 +35,10 @@ import {
   Vector3,
 } from 'three'
 import type { NatureGeometry } from './natureLibrary.ts'
-import type { Heightfield } from '../terrain/heightfield.ts'
+import { WATER_LEVEL, type Heightfield } from '../terrain/heightfield.ts'
+import { regionAt } from '../terrain/biome.ts'
 import type { ObstacleGrid } from '../physics/obstacleGrid.ts'
+import type { RoadNetwork } from './roads.ts'
 
 /**
  * 攀爬高度占模型高度的比例。
@@ -85,6 +87,12 @@ export interface SpeciesSpec {
   density?: number
   /** 是否参与风动摆动 */
   wind?: boolean
+  /**
+   * 秋色群系的亲和度。>1 表示秋色区主导（落叶树给 8），
+   * 缺省则秋色区照常、非秋色区按普通对待。
+   * 带亲和度的物种在非秋色区权重会压到 6%——秋林就该成片，不该满地零星
+   */
+  autumnAffinity?: number
 }
 
 export interface ScatterConfig {
@@ -127,6 +135,8 @@ export class ScatterField {
     config: ScatterConfig,
     obstacles?: ObstacleGrid,
     wind: { strength: number; speed: number } = { strength: 0.16, speed: 1 },
+    /** 道路网络：路上的位置不长树（树冠糊脸的路没法走） */
+    private readonly roads?: RoadNetwork,
   ) {
     this.group.name = 'scatter'
     this.windStrength = { value: wind.strength }
@@ -267,8 +277,10 @@ export class ScatterField {
         const y = hf.height(x, z)
         const slope = hf.slope(x, z)
 
-        const spec = pickSpecies(species, totalWeight, rand, y, density)
+        const spec = pickSpecies(species, totalWeight, rand, y, density, regionAt(x, z), x)
         if (!spec) continue
+        // 树不挡路：道路上空出一条走廊，玩家沿着路走不会被树冠糊脸
+        if (this.roads && spec.collide && this.roads.isOnRoad(x, z)) continue
         if (slope > (spec.maxSlope ?? 0.55)) continue
         if (density < (spec.density ?? 0)) continue
 
@@ -540,13 +552,21 @@ function pickSpecies(
   rand: () => number,
   height: number,
   density: number,
+  region: number,
+  x: number,
 ): SpeciesSpec | null {
+  // 秋色群系只在东部谷地（与 biomeAt 的分区一致）：区域噪声
+  // 负责谷地内部的秋林斑块，东界决定"哪里是谷地"
+  const inAutumn = x > 105 && region > 0.58 && height > WATER_LEVEL + 3 && height < 58
+
   // 先算出每个物种在当前海拔下的有效权重
   let effective = 0
   const weights = new Array<number>(species.length)
   for (let i = 0; i < species.length; i++) {
     const s = species[i]
-    const w = s.weight * bandWeight(s, height) * (density >= (s.density ?? 0) ? 1 : 0)
+    let w = s.weight * bandWeight(s, height) * (density >= (s.density ?? 0) ? 1 : 0)
+    // 秋色亲和：落叶树在秋林里压倒性主导，出了秋林几乎不见
+    if (s.autumnAffinity) w *= inAutumn ? s.autumnAffinity : 0.06
     weights[i] = w
     effective += w
   }

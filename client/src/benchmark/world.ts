@@ -20,6 +20,7 @@ import { DayCycle } from '../world/dayCycle.ts'
 import { GrassField } from '../world/grassField.ts'
 import { ObstacleGrid } from '../physics/obstacleGrid.ts'
 import { Heightfield, WATER_LEVEL } from '../terrain/heightfield.ts'
+import type { RoadNetwork } from '../world/roads.ts'
 import { ChunkedTerrain, type TerrainConfig } from '../terrain/chunkedTerrain.ts'
 import { VegetationField } from '../world/vegetation.ts'
 import type { NatureGeometry } from '../world/natureLibrary.ts'
@@ -29,6 +30,11 @@ export interface WorldOptions {
   treeCount: number
   shadows: boolean
   shadowMapSize: number
+  /**
+   * 道路网络。必须在构造时传入：散布是同步生成的，树一旦落地就
+   * 不会再挪——后补的道路会从树林里穿过去
+   */
+  roads?: RoadNetwork
 }
 
 /**
@@ -117,7 +123,7 @@ export class BenchmarkWorld {
     this.heightfield = new Heightfield({ seed: 20260930 })
 
     const terrainConfig: Partial<TerrainConfig> = { viewDistance: options.viewDistance }
-    this.terrain = new ChunkedTerrain(this.heightfield, terrainConfig)
+    this.terrain = new ChunkedTerrain(this.heightfield, terrainConfig, options.roads)
     this.scene.add(this.terrain.group)
 
     this.vegetation = new VegetationField(
@@ -126,12 +132,13 @@ export class BenchmarkWorld {
       { count: options.treeCount, groupSize: 128 },
       {},
       this.obstacles,
+      options.roads,
     )
     this.vegetation.setShadows(options.shadows)
     this.scene.add(this.vegetation.group)
 
     // 草叶层：地面不能只有顶点色，否则走上去像踩在刷了绿漆的地毯上
-    this.grass = new GrassField(this.heightfield)
+    this.grass = new GrassField(this.heightfield, {}, options.roads)
     this.scene.add(this.grass.group)
 
     // 水面高度取自地形的水位常量，两边必须用同一个值
@@ -182,7 +189,7 @@ export class BenchmarkWorld {
   setTreeCount(count: number): void {
     this.scene.remove(this.vegetation.group)
     this.vegetation.dispose()
-    this.vegetation = new VegetationField(this.heightfield, this.nature, { count, groupSize: 128 })
+    this.vegetation = new VegetationField(this.heightfield, this.nature, { count, groupSize: 128 }, {}, this.obstacles, this.options.roads)
     this.vegetation.setShadows(this.options.shadows)
     this.scene.add(this.vegetation.group)
     this.options.treeCount = count

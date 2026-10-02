@@ -32,7 +32,9 @@ import {
   type Object3D,
 } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { addOutline, toonify } from '../render/toon.ts'
 import { WATER_LEVEL, type Heightfield } from '../terrain/heightfield.ts'
+import type { ObstacleGrid } from '../physics/obstacleGrid.ts'
 import type { AttackTarget } from '../gameplay/playerCombat.ts'
 import { Health } from '../gameplay/health.ts'
 
@@ -163,14 +165,18 @@ class GltfAnimalRig implements AnimalRig {
       if (!mesh.isMesh) return
       mesh.castShadow = true
       mesh.frustumCulled = false
-      // 与场景统一质感：Lambert + 保留顶点色
+      // 与角色同一套卡通渲染：色阶材质 + 顶点色
       const old = mesh.material as { color?: Color; vertexColors?: boolean }
-      mesh.material = new MeshLambertMaterial({
-        color: old.color ? old.color.clone() : new Color(0xffffff),
-        vertexColors: old.vertexColors ?? true,
-      })
+      mesh.material = toonify(
+        new MeshLambertMaterial({
+          color: old.color ? old.color.clone() : new Color(0xffffff),
+          vertexColors: old.vertexColors ?? true,
+        }),
+      )
     })
     this.object.add(inner)
+    // 描边轮廓壳共享骨架，吃草的鹿也有"画出来"的轮廓
+    addOutline(inner)
 
     this.mixer = new AnimationMixer(inner)
     for (const clip of tpl.animations) {
@@ -252,13 +258,26 @@ class ProceduralAnimalRig implements AnimalRig {
   private phase = Math.random() * Math.PI * 2
   private deathT = 0
 
-  constructor(kind: 'boar' | 'rabbit') {
+  constructor(kind: 'boar' | 'rabbit', targetHeight: number) {
     if (kind === 'boar') this.buildBoar()
     else this.buildRabbit()
+
+    // 拼装的尺寸是随手定的，按目标肩高统一缩放，
+    // 否则"兔子"会和"野猪"一样大
+    const box = measureObject(this.object)
+    const rawH = Math.max(0.001, box.max.y - box.min.y)
+    const s = targetHeight / rawH
+    this.object.scale.setScalar(s)
+
+    // 拼装的动物头朝 +X（顺手建的），而 yaw 约定正面朝 +Z。
+    // 不转过来动物会横着走路
+    this.object.rotation.y = Math.PI / 2
+
     this.object.traverse((child) => {
       const mesh = child as Mesh
       if (mesh.isMesh) mesh.castShadow = true
     })
+    addOutline(this.object)
   }
 
   /**
@@ -453,6 +472,7 @@ export class Animal implements AttackTarget {
     playerPos: Vector3,
     terrain: Heightfield,
     onAttackPlayer: (damage: number, fromPos: Vector3) => void,
+    obstacles?: ObstacleGrid,
   ): void {
     if (this.state === 'dead') {
       this.deadFor += dt
@@ -574,6 +594,13 @@ export class Animal implements AttackTarget {
         // 撞水转向：沿岸边偏转 90°
         this.yaw += Math.PI / 2
       }
+      // 不穿树：和玩家同一套碰撞推出。没有这一条，野猪撞人会
+      // 直接穿过树干——玩家砍到一半发现猪在树里
+      if (obstacles) {
+        const fixed = obstacles.resolve(this.position.x, this.position.z, 0.5, this.position.y)
+        this.position.x = fixed.x
+        this.position.z = fixed.z
+      }
       this.position.y = terrain.height(this.position.x, this.position.z)
     } else {
       this.speed *= Math.max(0, 1 - dt * 6)
@@ -643,7 +670,7 @@ export class WildlifeManager {
       for (let i = 0; i < herd; i++) {
         const rig =
           def.model === null
-            ? new ProceduralAnimalRig(def.kind as 'boar' | 'rabbit')
+            ? new ProceduralAnimalRig(def.kind as 'boar' | 'rabbit', def.height)
             : new GltfAnimalRig(tpl!, def.height)
         const animal = new Animal(def, rig)
         const a = Math.random() * Math.PI * 2
@@ -662,6 +689,7 @@ export class WildlifeManager {
     playerPos: Vector3,
     terrain: Heightfield,
     onAttackPlayer: (damage: number, fromPos: Vector3) => void,
+    obstacles?: ObstacleGrid,
   ): void {
     for (const animal of this.animals) {
       // 离玩家太远的动物冻结：看不见的地方不需要生态。
@@ -672,7 +700,7 @@ export class WildlifeManager {
         if (animal.state === 'dead') animal.deadFor += dt
         continue
       }
-      animal.update(dt, playerPos, terrain, onAttackPlayer)
+      animal.update(dt, playerPos, terrain, onAttackPlayer, obstacles)
     }
   }
 

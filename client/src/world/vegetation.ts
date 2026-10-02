@@ -20,6 +20,7 @@ import {
 import type { NatureGeometry, NatureRequest } from './natureLibrary.ts'
 import type { Heightfield } from '../terrain/heightfield.ts'
 import type { ObstacleGrid } from '../physics/obstacleGrid.ts'
+import type { RoadNetwork } from './roads.ts'
 
 /**
  * 素材加载清单。
@@ -160,10 +161,10 @@ export const SPECIES: SpeciesSpec[] = [
   { model: 'tree_cone', weight: 0.85, scale: [0.9, 1.3], band: [18, 48], collide: 0.32, climbable: true, wind: true, density: 0.2 },
   { model: 'tree_small', weight: 0.9, scale: [0.9, 1.4], band: [16, 44], collide: 0.26, climbable: true, wind: true, density: 0.18 },
 
-  // ── 秋季点缀：低权重，混在阔叶里偶发几棵 ──
-  { model: 'tree_oak_fall', weight: 0.32, scale: [0.85, 1.2], band: [16, 48], collide: 0.34, climbable: true, wind: true, density: 0.22 },
-  { model: 'tree_default_fall', weight: 0.32, scale: [0.85, 1.2], band: [16, 48], collide: 0.36, climbable: true, wind: true, density: 0.22 },
-  { model: 'tree_thin_fall', weight: 0.28, scale: [0.85, 1.2], band: [16, 46], collide: 0.28, climbable: true, wind: true, density: 0.22 },
+  // ── 秋季落叶树：秋色群系的主导物种，出了秋林几乎不出现 ──
+  { model: 'tree_oak_fall', weight: 0.9, scale: [0.85, 1.2], band: [16, 48], collide: 0.34, climbable: true, wind: true, density: 0.14, autumnAffinity: 8 },
+  { model: 'tree_default_fall', weight: 0.9, scale: [0.85, 1.2], band: [16, 48], collide: 0.36, climbable: true, wind: true, density: 0.14, autumnAffinity: 8 },
+  { model: 'tree_thin_fall', weight: 0.8, scale: [0.85, 1.2], band: [16, 46], collide: 0.28, climbable: true, wind: true, density: 0.14, autumnAffinity: 8 },
 
   // ── 针叶林：从草原上缘开始接管，一直长到雪线附近 ──
   { model: 'tree_pineTallA', weight: 1.7, scale: [0.85, 1.2], band: [44, 92], collide: 0.32, climbable: true, wind: true, density: 0.18 },
@@ -260,6 +261,8 @@ export class VegetationField {
     wind: Partial<VegetationWindConfig> = {},
     /** 传入后会把树干、大石头的碰撞体登记进去，角色因此不会走进去 */
     obstacles?: ObstacleGrid,
+    /** 道路网络：路面不长树 */
+    roads?: RoadNetwork,
   ) {
     const cfg = { ...DEFAULT_VEGETATION_CONFIG, ...config }
     const windCfg = { ...DEFAULT_WIND, ...wind }
@@ -280,6 +283,7 @@ export class VegetationField {
       } satisfies ScatterConfig,
       obstacles,
       windCfg,
+      roads,
     )
     this.group.add(this.field.group)
   }

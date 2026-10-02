@@ -7,7 +7,8 @@
  */
 
 export class Health {
-  readonly max: number
+  /** 上限可变：神庙的心之容器会把它顶上去 */
+  max: number
   current: number
 
   private invulnTimer = 0
@@ -46,6 +47,16 @@ export class Health {
   heal(amount: number): void {
     if (this.isDead) return
     this.current = Math.min(this.max, this.current + amount)
+  }
+
+  /**
+   * 心之容器：生命上限 +n 并回满。塞尔达的惯例——拿到容器的那一刻
+   * 是奖励的高潮，顺手补满让玩家带着满血离开神庙
+   */
+  growMax(n = 1): void {
+    this.max += n
+    this.current = this.max
+    this.invulnTimer = 0
   }
 
   /** 读档时直接设定当前值。会夹到 [0, max] 之内 */

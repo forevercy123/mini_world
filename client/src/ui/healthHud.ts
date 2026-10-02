@@ -35,6 +35,22 @@ export class HealthHud {
     this.update(maxHearts)
   }
 
+  /** 生命上限变了（拿到心之容器）时补心 */
+  setMax(maxHearts: number): void {
+    while (this.hearts.length < maxHearts) {
+      const heart = document.createElement('span')
+      heart.textContent = '♥'
+      heart.style.cssText = 'transition:color 0.15s,transform 0.15s'
+      this.root.appendChild(heart)
+      this.hearts.push(heart)
+    }
+    while (this.hearts.length > maxHearts) {
+      this.hearts.pop()?.remove()
+    }
+    // 心数变了，强制重绘
+    this.lastCurrent = -1
+  }
+
   update(current: number): void {
     const rounded = Math.max(0, current)
     if (rounded === this.lastCurrent) return

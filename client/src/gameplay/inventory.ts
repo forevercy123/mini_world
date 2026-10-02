@@ -54,6 +54,11 @@ export interface ItemDef {
   dish?: boolean
   /** 拾取物外形：果实带梗叶，肉是肉块 */
   shape?: 'fruit' | 'meat'
+  /**
+   * 料理增益：攻击倍率 / 受伤倍率，持续 seconds 秒。
+   * 好食材做出的料理除了回血，还该有一份"这锅值了"的惊喜
+   */
+  buff?: { attack?: number; defense?: number; seconds: number }
 }
 
 export const ITEM_DEFS: Record<ItemId, ItemDef> = {
@@ -131,7 +136,8 @@ export const ITEM_DEFS: Record<ItemId, ItemDef> = {
     heal: 5,
     dish: true,
     shape: 'meat',
-    desc: '肉和蘑菇交替串起来，鲜味翻倍（5 颗心）',
+    buff: { defense: 0.5, seconds: 60 },
+    desc: '肉和蘑菇交替串起来，鲜味翻倍（5 颗心，60 秒受伤减半）',
   },
   dish_fruit: {
     id: 'dish_fruit',
@@ -147,7 +153,8 @@ export const ITEM_DEFS: Record<ItemId, ItemDef> = {
     color: 0xf2c53d,
     heal: 99,
     dish: true,
-    desc: '向阳果的精华炖进汤里，一口下去浑身是劲（完全恢复）',
+    buff: { attack: 1.5, seconds: 60 },
+    desc: '向阳果的精华炖进汤里，一口下去浑身是劲（完全恢复，60 秒攻击 ×1.5）',
   },
   dish_mushroom: {
     id: 'dish_mushroom',

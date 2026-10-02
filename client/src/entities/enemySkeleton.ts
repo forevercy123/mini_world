@@ -24,6 +24,7 @@ import {
   Box3,
   Group,
   MeshLambertMaterial,
+  MeshToonMaterial,
   Object3D,
   Quaternion,
   Bone,
@@ -36,6 +37,7 @@ import {
 } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js'
+import { addOutline, toonify } from '../render/toon.ts'
 import type { EnemyRig } from './enemyVisual.ts'
 
 export interface SkeletonTemplate {
@@ -172,8 +174,8 @@ export function createSkeletonRig(template: SkeletonTemplate): EnemyRig {
 
   // ── 材质：每个敌人一份 ──
   // 受击闪红改的是材质的 emissive，共享材质会让整场敌人一起闪
-  const materials: MeshLambertMaterial[] = []
-  const remap = new Map<Material, MeshLambertMaterial>()
+  const materials: MeshToonMaterial[] = []
+  const remap = new Map<Material, MeshToonMaterial>()
   instance.traverse((child) => {
     const mesh = child as Mesh
     if (!mesh.isMesh) return
@@ -183,20 +185,24 @@ export function createSkeletonRig(template: SkeletonTemplate): EnemyRig {
     const source = mesh.material as MeshStandardMaterial
     let next = remap.get(source)
     if (!next) {
-      next = new MeshLambertMaterial({
-        color: source.color?.clone(),
-        map: source.map ?? null,
-        // 眼睛那层是自发光的，转成 Lambert 后 emissive 要显式带过来，
-        // 否则骷髅会变成两只黑洞
-        emissive: source.emissive?.clone(),
-        emissiveMap: source.emissiveMap ?? null,
-        emissiveIntensity: source.emissiveIntensity ?? 1,
-      })
+      next = toonify(
+        new MeshLambertMaterial({
+          color: source.color?.clone(),
+          map: source.map ?? null,
+          // 眼睛那层是自发光的，转成 Toon 后 emissive 要显式带过来，
+          // 否则骷髅会变成两只黑洞
+          emissive: source.emissive?.clone(),
+          emissiveMap: source.emissiveMap ?? null,
+          emissiveIntensity: source.emissiveIntensity ?? 1,
+        }),
+      )
       remap.set(source, next)
       materials.push(next)
     }
     mesh.material = next
   })
+  // 卡通描边：轮廓壳共享骨架，动画照样驱动
+  addOutline(instance)
 
   // ── 骨骼：给每根要驱动的骨头配一个 pivot ──
   const bones = new Map<string, Object3D>()

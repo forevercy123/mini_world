@@ -38,6 +38,10 @@ export interface AvatarLike {
   dispose(): void
   /** 换手上持有的武器。null 表示空手。手写几何版不支持，glTF 版才有 */
   setWeapon?(weapon: Object3D | null, moveset: string, attackDuration: number): void
+  /** 配盾：平时背在背后，格挡时移到左手 */
+  setShield?(shield: Object3D | null): void
+  /** 格挡姿态切换（盾上手/上背） */
+  setShieldRaised?(raised: boolean): void
 }
 
 export interface AvatarState {
@@ -50,8 +54,12 @@ export interface AvatarState {
   attackProgress?: number
   /** 是否正在出招。glTF 模型靠它触发一次性的挥砍动作 */
   attacking?: boolean
-  /** 连击段数（0 起）。连续出招时轮换不同的挥砍动画 */
+  /** 连击段数（0 起）。连续出招时轮换不同的挥砍动画；3 = 蓄力旋风斩 */
   attackCombo?: number
+  /** 正在按住攻击键蓄力：角色摆备战姿势 */
+  charging?: boolean
+  /** 举盾格挡中 */
+  blocking?: boolean
   /** 是否正在闪避。触发一次性的翻滚动作 */
   dodging?: boolean
   /** 无敌帧剩余比例 1→0，用于受击闪烁 */

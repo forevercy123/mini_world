@@ -52,8 +52,10 @@ export class HitSparks {
     const geometry = new RingGeometry(0.62, 1, 14, 1)
     for (let i = 0; i < SPARK_COUNT; i++) {
       const material = new MeshBasicMaterial({
-        // HDR 白黄：走 ACES 色调映射后仍然亮得扎眼，普通白色会被压灰
-        color: new Color(3.2, 2.6, 1.4),
+        // HDR 白黄：走 ACES 色调映射后仍然亮得扎眼，普通白色会被压灰。
+        // 但配上 bloom，亮度过 2 就会被拉成一团比环本身大几倍的
+        // 光雾——火花是"一闪"，不是照明弹
+        color: new Color(1.7, 1.45, 0.95),
         transparent: true,
         opacity: 0,
         depthWrite: false,
@@ -87,11 +89,12 @@ export class HitSparks {
     }
 
     target.life = SPARK_LIFE
-    target.size = big ? 1.5 : 0.85
+    // 环的外径约 1m：命中点的一记闪光，不是爆炸。重击稍大一圈即可
+    target.size = big ? 1.0 : 0.6
     target.mesh.visible = true
     target.mesh.position.set(x, y, z)
     target.mesh.scale.setScalar(target.size * 0.35)
-    target.material.opacity = 1
+    target.material.opacity = 0.85
   }
 
   update(dt: number): void {
@@ -143,10 +146,11 @@ export class SlashTrail {
   private static readonly LIFE = 0.34
 
   constructor() {
-    // 扇形：内径 0.55、外径 1.9、张角 150°
-    const geometry = new RingGeometry(0.55, 1.9, 16, 1, -Math.PI * 0.42, Math.PI * 0.84)
+    // 扇形：内径 0.5、外径 1.15、张角 150°——弧光跟随剑锋，
+    // 比剑长一截就够了，再大的话一次挥砍糊掉半个屏幕
+    const geometry = new RingGeometry(0.5, 1.15, 16, 1, -Math.PI * 0.42, Math.PI * 0.84)
     this.material = new MeshBasicMaterial({
-      color: new Color(2.6, 2.9, 3.2),
+      color: new Color(1.9, 2.2, 2.5),
       transparent: true,
       opacity: 0,
       depthWrite: false,
@@ -161,18 +165,22 @@ export class SlashTrail {
     this.object.position.y = 1.05
   }
 
-  /** 出招时调用。alternate 为 true 时左右交替挥砍 */
-  start(x: number, z: number, yaw: number, alternate: boolean): void {
+  /** 出招时调用。alternate 为 true 时左右交替挥砍；color 覆盖默认的冷白 */
+  start(x: number, y: number, z: number, yaw: number, alternate: boolean, color?: Color): void {
     this.life = SlashTrail.LIFE
     this.object.visible = true
-    this.object.position.set(x, this.object.position.y, z)
+    // 弧光抬到胸口高度——海拔必须跟着玩家走，固定高度的话
+    // 在山上挥剑，轨迹会沉到地面以下二十米
+    this.object.position.set(x, y + 1.05, z)
     // 让弧线沿着角色朝向展开：几何的 0° 在 +X，角色正面是 +Z
     this.object.rotation.z = -yaw - Math.PI / 2
     if (alternate) this.flip = -this.flip
+    if (color) this.material.color.copy(color)
+    else this.material.color.setRGB(1.9, 2.2, 2.5)
   }
 
   /** 每帧跟随角色位置（挥砍时人还在动） */
-  update(dt: number, x: number, z: number): void {
+  update(dt: number, x: number, y: number, z: number): void {
     if (this.life <= 0) return
     this.life -= dt
     if (this.life <= 0) {
@@ -180,12 +188,13 @@ export class SlashTrail {
       return
     }
     this.object.position.x = x
+    this.object.position.y = y + 1.05
     this.object.position.z = z
 
     const t = 1 - this.life / SlashTrail.LIFE
     // 弧光扫过：整体缩放从 0.75 张到 1.15，透明度先冲高再收
     this.object.scale.setScalar(0.75 + t * 0.4)
-    this.material.opacity = Math.sin(Math.min(1, t * 1.35) * Math.PI) * 0.5
+    this.material.opacity = Math.sin(Math.min(1, t * 1.35) * Math.PI) * 0.38
     // 绕自身旋转一点，模拟手腕的翻转让刀刃划出弧线
     this.object.rotation.y = this.flip * (t - 0.5) * 1.1
   }

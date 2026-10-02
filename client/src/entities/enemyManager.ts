@@ -52,6 +52,33 @@ export class EnemyManager {
     return this.enemies
   }
 
+  /**
+   * 在指定坐标各刷一只怪。神庙挑战用：波次刷新的位置是设计好的，
+   * 不走随机撒点
+   */
+  spawnAtPositions(
+    terrain: Heightfield,
+    positions: readonly { x: number; z: number }[],
+    kind: EnemyKind,
+    configOverride: Partial<EnemyConfig> = {},
+  ): Enemy[] {
+    const def = ENEMY_KINDS[kind]
+    const config: Partial<EnemyConfig> = { ...def.config, ...configOverride }
+    const template = this.skeletons.get(def.model) ?? null
+    const out: Enemy[] = []
+    for (const p of positions) {
+      const enemy = new Enemy(config, template)
+      if (def.scale !== 1) enemy.object.scale.setScalar(def.scale)
+      enemy.spawnAt(p.x, p.z, terrain)
+      enemy.kind = kind
+      this.enemies.push(enemy)
+      this.group.add(enemy.object)
+      this.group.add(enemy.healthBar.object)
+      out.push(enemy)
+    }
+    return out
+  }
+
   get totalCount(): number {
     return this.enemies.length
   }

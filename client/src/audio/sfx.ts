@@ -228,4 +228,29 @@ export class Sfx {
   beastAlert(): void {
     this.tone(340, 0.24, 'sawtooth', 0.07, 620)
   }
+
+  /** 完美闪避：一声清亮的钟音，宣告子弹时间开始 */
+  perfect(): void {
+    this.tone(1568, 0.4, 'sine', 0.16)
+    this.tone(2093, 0.5, 'sine', 0.12, undefined, 0.07)
+    this.noise(0.2, 5000, 0.06, 8000)
+  }
+
+  /** 蓄力旋风斩：低频起旋 + 破空，比普攻重一档 */
+  spin(): void {
+    this.noise(0.3, 900, 0.16, 2400)
+    this.tone(240, 0.26, 'sawtooth', 0.1, 480)
+  }
+
+  /** 盾挡：一声干净的金属敲击。挡住攻击是好消息，音色要"亮" */
+  block(): void {
+    this.tone(1180, 0.16, 'triangle', 0.16, 900)
+    this.noise(0.08, 3600, 0.12, 2400)
+  }
+
+  /** 放箭：弦的弹响 + 破空。比挥剑更脆、更短 */
+  shoot(): void {
+    this.tone(240, 0.07, 'square', 0.14, 90)
+    this.noise(0.18, 2200, 0.12, 5600)
+  }
 }

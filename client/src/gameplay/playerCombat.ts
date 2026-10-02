@@ -70,6 +70,8 @@ export class PlayerCombat {
   progress = 0
   /** 本帧是否刚触发命中判定，供音效/特效使用 */
   justHit = false
+  /** 伤害倍率：料理增益挂在这里。武器数据不动，buff 叠在外面 */
+  damageMultiplier = 1
 
   private timer = 0
   private hitApplied = false
@@ -156,7 +158,7 @@ export class PlayerCombat {
       if (dot < cosHalfArc) continue
 
       _knockback.set(dx / dist, 0, dz / dist)
-      target.onHit(this.config.damage, _knockback, this.config.knockbackForce)
+      target.onHit(Math.round(this.config.damage * this.damageMultiplier), _knockback, this.config.knockbackForce)
       this.hits.push(target)
     }
   }

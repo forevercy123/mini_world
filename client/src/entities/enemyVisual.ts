@@ -19,6 +19,7 @@ import {
   Group,
   Mesh,
   MeshLambertMaterial,
+  MeshToonMaterial,
   SphereGeometry,
   Vector3,
   type Object3D,
@@ -38,8 +39,9 @@ export interface EnemyRig {
   armR: Object3D
   legL: Object3D
   legR: Object3D
-  /** 只用一种材质（顶点色区分部件），数组形式是为了统一 dispose */
-  materials: MeshLambertMaterial[]
+  /** 只用一种材质（顶点色区分部件），数组形式是为了统一 dispose。
+   *  骨骼版是三渲二材质（MeshToonMaterial），同样带 emissive */
+  materials: Array<MeshLambertMaterial | MeshToonMaterial>
   geometries: BufferGeometry[]
   /**
    * 骨骼版专用：每帧推进基础动画并记录基准旋转，手写版不需要。

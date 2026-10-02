@@ -28,6 +28,8 @@ import {
   Vector3,
 } from 'three'
 import { WATER_LEVEL, type Heightfield } from '../terrain/heightfield.ts'
+import { biomeAt, GRASS_DENSITY, type Biome } from '../terrain/biome.ts'
+import type { RoadNetwork } from './roads.ts'
 
 export interface GrassConfig {
   /** 单块的边长（米） */
@@ -87,6 +89,8 @@ export class GrassField {
   constructor(
     private readonly hf: Heightfield,
     config: Partial<GrassConfig> = {},
+    /** 道路：路上草稀。行人踩出来的路不该是草丛 */
+    private readonly roads?: RoadNetwork,
   ) {
     this.cfg = { ...DEFAULT_GRASS, ...config }
     this.group.name = 'grass'
@@ -122,7 +126,7 @@ export class GrassField {
     const spacing = Math.sqrt((size * size) / Math.max(1, expected))
     const grid = Math.max(1, Math.round(size / spacing))
 
-    const placements: Array<{ x: number; y: number; z: number; rot: number; scale: number; height: number }> = []
+    const placements: Array<{ x: number; y: number; z: number; rot: number; scale: number; height: number; biome: Biome }> = []
 
     for (let iz = 0; iz < grid; iz++) {
       for (let ix = 0; ix < grid; ix++) {
@@ -141,9 +145,19 @@ export class GrassField {
         if (h > 78) continue
         if (this.hf.slope(x, z) > 0.62) continue
 
+        // 群系决定这里长不长草、长什么草。全图一片绿的问题就出在老版本
+        // 只有海拔一个维度——现在草甸茂密、秋林稀疏（落叶盖住了草）、
+        // 高地的石缝里只零星冒几丛
+        const biome = biomeAt(x, z, h)
+        let densityMul = GRASS_DENSITY[biome]
+        // 路上几乎不长草：被脚踩秃了
+        if (this.roads && this.roads.distance(x, z) < 3.0) densityMul *= 0.12
+        if (densityMul <= 0) continue
+        if (rng() > densityMul) continue
+
         const scale = 0.8 + rng() * 0.5
         const height = cfg.minHeight + rng() * (cfg.maxHeight - cfg.minHeight)
-        placements.push({ x, y: h, z, rot: rng() * Math.PI * 2, scale, height })
+        placements.push({ x, y: h, z, rot: rng() * Math.PI * 2, scale, height, biome })
       }
     }
 
@@ -169,9 +183,23 @@ export class GrassField {
       matrix.compose(position, quaternion, scaleVec)
       mesh.setMatrixAt(i, matrix)
 
-      // 每簇的色调略有差异，整片草地才不会像一块均匀的绿布
+      // 每簇的色调略有差异，整片草地才不会像一块均匀的绿布。
+      // 群系再给一层基调：草甸鲜亮、秋林枯黄、高地偏灰绿，
+      // 站在这块地上看草就知道自己在哪
       const tint = 0.82 + rng() * 0.36
-      color.setRGB(tint * 0.95, tint, tint * 0.88)
+      switch (p.biome) {
+        case 'autumn':
+          color.setRGB(tint * 1.22, tint * 0.98, tint * 0.55)
+          break
+        case 'forest':
+          color.setRGB(tint * 0.82, tint * 0.95, tint * 0.8)
+          break
+        case 'rock':
+          color.setRGB(tint * 0.9, tint * 0.95, tint * 0.86)
+          break
+        default:
+          color.setRGB(tint * 0.95, tint, tint * 0.88)
+      }
       mesh.setColorAt(i, color)
     }
 

@@ -68,15 +68,18 @@ const run = async () => {
       const v = deer.position.constructor
       deer.onHit(99, new v(1, 0, 0), 0)
     })()`)
-    await sleep(3200) // 尸体停留 2.6s 后化成肉
-    const meatCount = await evalV(`window.__inventory.count('raw_meat')`)
-    // 传送到鹿尸体处捡肉
-    await evalV(`(() => {
-      const d = window.__deer.position
-      window.__player.teleportTo(d.x, d.z, window.__world.heightfield)
-    })()`)
-    await sleep(900)
-    const meatPicked = await evalV(`window.__inventory.count('raw_meat')`)
+    // 尸体化肉要 2.6s。轮询代替死等：高负载下 eval 往返会慢，
+    // 每轮都把玩家拉到尸体旁（肉掉在尸体周围 0.6m）
+    let meatPicked = 0
+    for (let i = 0; i < 20; i++) {
+      await sleep(600)
+      await evalV(`(() => {
+        const d = window.__deer.position
+        window.__player.teleportTo(d.x, d.z, window.__world.heightfield)
+      })()`)
+      meatPicked = await evalV(`window.__inventory.count('raw_meat')`)
+      if (meatPicked >= 1) break
+    }
     ok(meatPicked >= 1, '猎杀鹿掉生肉并自动拾取', `raw_meat=${meatPicked}`)
 
     // ── 4. 烹饪 ──

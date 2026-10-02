@@ -56,6 +56,8 @@ export class WeaponHud {
           slot.durability,
           i === bag.index,
           def.rarity,
+          // 远程武器：弹药数比耐久更要紧，直接标在名字后面
+          def.moveset === 'shoot' ? bag.arrows : null,
         ),
       )
     }
@@ -68,6 +70,7 @@ export class WeaponHud {
     durability: number,
     active: boolean,
     rarity: string,
+    arrows: number | null = null,
   ): HTMLDivElement {
     const box = document.createElement('div')
     box.style.cssText = [
@@ -82,7 +85,7 @@ export class WeaponHud {
     const row = document.createElement('div')
     row.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;gap:8px'
     const label = document.createElement('span')
-    label.textContent = name
+    label.textContent = arrows !== null ? `${name} · 箭 ${arrows}` : name
     label.style.cssText = active ? 'font-weight:600' : ''
     row.appendChild(label)
     if (key) {

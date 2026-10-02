@@ -25,7 +25,9 @@ import {
   Group,
   LoopOnce,
   Mesh,
+  MeshBasicMaterial,
   MeshLambertMaterial,
+  SphereGeometry,
   SRGBColorSpace,
   Vector3,
   type AnimationAction,
@@ -36,6 +38,7 @@ import {
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import type { AvatarLike, AvatarState } from './playerAvatar.ts'
 import { normalizeBoneName } from '../entities/enemySkeleton.ts'
+import { addOutline, toonify } from '../render/toon.ts'
 
 /**
  * 纹理换色规则。
@@ -100,23 +103,43 @@ const ATTACK_ANIM_SECONDS = 0.58
  * 帧更靠后，刚好让玩家感到"收尾这一下更重"。
  */
 const MOVESET_CLIPS: Record<string, string[][]> = {
+  // 每组第 4 段（index 3）是蓄力旋风斩：双手抡一整圈，任何武器通用
   '1h': [
     ['1h_melee_attack_chop'],
     ['1h_melee_attack_slice_diagonal'],
     ['1h_melee_attack_slice_horizontal'],
+    ['2h_melee_attack_spin'],
   ],
   '2h': [
     ['2h_melee_attack_chop'],
     ['2h_melee_attack_slice'],
     ['2h_melee_attack_spin'],
+    ['2h_melee_attack_spinning'],
   ],
-  stab: [['1h_melee_attack_stab'], ['dualwield_melee_attack_stab']],
+  stab: [
+    ['1h_melee_attack_stab'],
+    ['dualwield_melee_attack_stab'],
+    ['1h_melee_attack_slice_horizontal'],
+    ['2h_melee_attack_spin'],
+  ],
   unarmed: [
     ['unarmed_melee_attack_punch_a'],
     ['unarmed_melee_attack_punch_b'],
     ['unarmed_melee_attack_kick'],
+    ['2h_melee_attack_spin'],
+  ],
+  // 远程：拉弦放箭。四段同一动作，连射不轮换——射箭的"连击"
+  // 读不出差别，统一用最利落的一段
+  shoot: [
+    ['1h_ranged_shoot'],
+    ['1h_ranged_shoot'],
+    ['1h_ranged_shoot'],
+    ['1h_ranged_shoot'],
   ],
 }
+
+/** 蓄力时的备战姿势：双手握持压低重心 */
+const CHARGE_CLIPS = ['2h_melee_idle', 'blocking', 'idle']
 
 const ATTACK_CLIPS = MOVESET_CLIPS['1h'][0]
 
@@ -177,6 +200,11 @@ export class ModelAvatar implements AvatarLike {
   private rootScale = 1
   /** 右手挂点骨骼。KayKit 角色约定武器挂这里，原点在握把 */
   private handSlot: Object3D | null = null
+  /** 左手挂点：格挡时盾在这里 */
+  private handSlotL: Object3D | null = null
+  /** 胸椎骨：盾平时背在背后 */
+  private chestBone: Object3D | null = null
+  private shieldObject: Object3D | null = null
   private weaponObject: Object3D | null = null
   private moveset = 'unarmed'
   private attackDuration = ATTACK_ANIM_SECONDS
@@ -207,6 +235,8 @@ export class ModelAvatar implements AvatarLike {
     // 它在地上展示时的同一个尺寸。否则 0.9 倍身高的角色会把 1 米长的
     // 剑也缩成 0.9 米
     visual.scale.multiplyScalar(1 / this.rootScale)
+    // 武器也描边——它是角色剪影的一部分，没有黑边的剑会显得"贴片"
+    addOutline(visual)
     this.handSlot.add(visual)
     this.weaponObject = visual
   }
@@ -232,6 +262,8 @@ export class ModelAvatar implements AvatarLike {
     recolor?: readonly RecolorRule[],
     /** 场景节点名。默认给玩家用，NPC 要传自己的 */
     name = 'player-model',
+    /** 主角专属的金色刘海颜色。不传则不加（NPC 没有刘海） */
+    hairColor?: number,
   ): Promise<ModelAvatar | null> {
     try {
       const loader = new GLTFLoader()
@@ -253,8 +285,12 @@ export class ModelAvatar implements AvatarLike {
       avatar.collectSwimBones()
       avatar.collectHandSlot()
       avatar.buildGlider()
+      if (hairColor !== undefined) avatar.buildHair(hairColor)
       if (recolor && recolor.length > 0) avatar.recolorTextures(recolor)
       avatar.setupAnimations(gltf.animations)
+      // 卡通描边：跳过挂点下自带的隐藏武器网格（它们 visible=false，
+      // 但描边壳会照样画黑边）
+      addOutline(root, (mesh) => mesh.visible)
       return avatar
     } catch (err) {
       console.warn('[角色模型] 加载失败，回退到手写外观：', err)
@@ -333,10 +369,56 @@ export class ModelAvatar implements AvatarLike {
   }
 
   /**
-   * 支起滑翔伞。
+   * 金色刘海：兜帽前沿下露出来的一撮头发。
    *
-   * 一个压扁的四棱锥，横着撑在头顶——四棱锥比圆锥更像布面，因为它的
-   * 棱线能把伞面分成几块，风一吹有明暗变化。挂在角色根节点上，
+   * 林克的标志性视觉之一就是帽子下漏出的金发。KayKit 的兜帽模型
+   * 没有头发，这里用三个低多边形片补在中间与两侧——贴在兜帽内沿，
+   * 跟着头骨骼动。粗看是"帽子里钻出一撮毛"，正是要的效果。
+   */
+  private buildHair(color = 0xe8c66a): void {
+    const headRef: { current: Object3D | null } = { current: null }
+    this.object.traverse((child) => {
+      if (!headRef.current && normalizeBoneName(child.name) === 'head') headRef.current = child
+    })
+    const head = headRef.current
+    if (!head) return
+
+    const mat = new MeshLambertMaterial({ color })
+    const hair = new Group()
+
+    // 中间一撮：压扁的锥垂在额头正中，从帽沿下探出来
+    const mid = new Mesh(new ConeGeometry(0.075, 0.26, 4), mat)
+    mid.scale.set(1.7, 1, 0.62)
+    mid.rotation.x = Math.PI - 0.22 // 尖朝下、略向前趴
+    mid.position.set(0, -0.03, 0.19)
+    hair.add(mid)
+
+    // 两侧各一小片：略弯向外
+    for (const side of [-1, 1]) {
+      const lock = new Mesh(new ConeGeometry(0.055, 0.18, 4), mat)
+      lock.scale.set(1.35, 1, 0.58)
+      lock.rotation.x = Math.PI
+      lock.rotation.z = side * 0.3
+      lock.position.set(side * 0.11, 0.0, 0.175)
+      hair.add(lock)
+    }
+
+    // 挂到头骨骼上，用局部坐标。缩放随骨骼链走，不用额外补偿
+    head.add(hair)
+
+    // 眼睛高光：纯黑的眼睛上点两粒白色高光，角色立刻"活"了。
+    // 极小的白色球贴在眼珠表面，低多边形风格里这是眼神的全部来源
+    const sparkleMat = new MeshBasicMaterial({ color: new Color(2.2, 2.2, 2.3) })
+    for (const side of [-1, 1]) {
+      const dot = new Mesh(new SphereGeometry(0.011, 6, 5), sparkleMat)
+      dot.position.set(side * 0.058, 0.015, 0.152)
+      head.add(dot)
+    }
+  }
+
+  /**
+   * 支起滑翔伞。一个压扁的四棱锥横着撑在头顶——四棱锥比圆锥更像布面，
+   * 它的棱线能把伞面分成几块，风一吹有明暗变化。挂在角色根节点上，
    * 跟着身体一起前倾，不需要单独同步姿态。
    */
   private buildGlider(): void {
@@ -403,11 +485,55 @@ export class ModelAvatar implements AvatarLike {
       }
       // 左手挂点同理：背着弩和飞刀跑会很出戏
       if (name === 'handslotl') {
+        this.handSlotL = child
         for (const c of child.children) c.visible = false
       }
+      // 胸椎：盾牌平时背在这里
+      if (name === 'chest') this.chestBone = child
     })
     if (!this.handSlot) console.warn('[角色] 没找到武器挂点 handslot.r')
   }
+
+  /**
+   * 给角色配盾。平时背在背后（塞尔达式的经典剪影），
+   * 格挡时移到左手。盾牌网格由调用方加载好传进来。
+   */
+  setShield(mesh: Object3D | null): void {
+    if (this.shieldObject) {
+      this.shieldObject.removeFromParent()
+      this.shieldObject = null
+    }
+    if (!mesh) return
+    mesh.scale.multiplyScalar(1 / this.rootScale)
+    this.shieldObject = mesh
+    this.mountShield(false)
+  }
+
+  /** 盾在背上还是手上 */
+  private mountShield(inHand: boolean): void {
+    const shield = this.shieldObject
+    if (!shield) return
+    shield.removeFromParent()
+    if (inHand && this.handSlotL) {
+      // 挂在手部挂点：挂点朝向和武器同一约定，直接可用
+      shield.position.set(0, 0, 0)
+      shield.rotation.set(0, 0, 0)
+      this.handSlotL.add(shield)
+    } else if (this.chestBone) {
+      // 背在胸椎后方：略沉、外移出背、立起来
+      shield.position.set(0, 0.16, -0.24)
+      shield.rotation.set(0, Math.PI, 0)
+      this.chestBone.add(shield)
+    }
+  }
+
+  /** 格挡状态切换：盾从背上到左手 */
+  setShieldRaised(raised: boolean): void {
+    if (this.shieldRaised === raised) return
+    this.shieldRaised = raised
+    this.mountShield(raised)
+  }
+  private shieldRaised = false
 
   /**
    * 蛙泳：手臂前伸外划，双腿反相蹬夹。
@@ -433,7 +559,7 @@ export class ModelAvatar implements AvatarLike {
     }
   }
 
-  /** 收集网格，统一换成与场景一致的材质质感 */
+  /** 收集网格，统一换成卡通渲染材质（色阶 + 后续描边） */
   private prepareMaterials(): void {
     this.object.traverse((child) => {
       const mesh = child as Mesh
@@ -444,15 +570,17 @@ export class ModelAvatar implements AvatarLike {
       this.meshes.push(mesh)
 
       // 外部模型常带高光贴图与金属度，在低多边形场景里会显得油亮。
-      // 统一换成 Lambert，只保留漫反射贴图，和场景其它物体一个质感。
+      // 统一换成三渲二色阶材质，只保留漫反射贴图
       const old = mesh.material as unknown as {
         color?: Color
         map?: Texture | null
       }
-      mesh.material = new MeshLambertMaterial({
-        color: old.color ? old.color.clone() : new Color(0xffffff),
-        map: old.map ?? null,
-      })
+      mesh.material = toonify(
+        new MeshLambertMaterial({
+          color: old.color ? old.color.clone() : new Color(0xffffff),
+          map: old.map ?? null,
+        }),
+      )
     })
   }
 
@@ -589,6 +717,20 @@ export class ModelAvatar implements AvatarLike {
 
     // 闪避优先于攻击：翻滚时被打断会卡在半路，位移和动画对不上
     if (state.dodging && this.playOneShot(DODGE_CLIPS, 0.05)) {
+      this.mixer.update(dt)
+      return
+    }
+    // 格挡姿势：盾举在身前。优先级低于攻击与闪避——那两件事情发生时
+    // 说明玩家已经放弃格挡了
+    if (state.blocking && !state.attacking && !state.dodging) {
+      this.play(this.findAction(['blocking', 'block']) ?? this.actions[0])
+      this.mixer.update(dt)
+      return
+    }
+    // 蓄力姿势：按住攻击键时压低重心备战。优先级低于攻击本身——
+    // 旋风斩放出去那一刻就不再是蓄力了
+    if (state.charging && !state.attacking) {
+      this.play(this.findAction(CHARGE_CLIPS) ?? this.actions[0])
       this.mixer.update(dt)
       return
     }

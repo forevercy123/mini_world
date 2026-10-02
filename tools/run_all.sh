@@ -18,7 +18,8 @@ TESTS=(
   verify_inventory verify_collision verify_quest verify_platform
   verify_swim verify_climb verify_dodge verify_save verify_chest
   verify_sidequest verify_shock verify_gust verify_audio
-  verify_weapon_beast verify_weapon_flow verify_cooking
+  verify_weapon_beast verify_weapon_flow verify_cooking verify_shrine
+  verify_bow
 )
 
 pass=0

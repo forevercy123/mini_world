@@ -16,9 +16,9 @@ export type SealKind = 'fire' | 'ice' | 'wind'
 export const SEALS: readonly SealKind[] = ['fire', 'ice', 'wind']
 
 export const SEAL_INFO: Record<SealKind, { name: string; title: string; hint: string }> = {
-  fire: { name: '火之封印', title: '火之祭坛', hint: '山脊上的石台，火盆还冷着' },
-  ice: { name: '冰之封印', title: '冰之祭坛', hint: '湖心岛，水面挡着去路' },
-  wind: { name: '风之封印', title: '风之祭坛', hint: '断崖之巅，得飞上去' },
+  fire: { name: '火之封印', title: '火之祭坛', hint: '沿东北的路穿过低语森林，山坡上的石台，火盆还冷着' },
+  ice: { name: '冰之封印', title: '冰之祭坛', hint: '沿南边的路到明镜湖，湖心岛上——水面挡着去路' },
+  wind: { name: '风之封印', title: '风之祭坛', hint: '沿北边的路爬上苍雪峰，断崖之巅，得借风飞上去' },
 }
 
 export type QuestStage =

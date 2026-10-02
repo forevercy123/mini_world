@@ -34,6 +34,8 @@ export interface MinimapMarkers {
    * 塞尔达式的引导不靠堆文字，靠"地图上那个一直亮着的点"。
    */
   questTarget: { x: number; z: number } | null
+  /** 神庙标记：未通关的亮青色，通关后转金。位置固定，由 main 构建一次 */
+  shrines?: readonly { x: number; z: number; cleared: boolean }[]
 }
 
 const RESOLUTION = 64
@@ -420,6 +422,29 @@ export function drawMap(ctx: CanvasRenderingContext2D, opts: MapDrawOptions): vo
     ctx.beginPath()
     ctx.arc(x, y, 2.6 * markerScale, 0, Math.PI * 2)
     ctx.fill()
+  }
+
+  // 神庙：小三角塔形。没通关的是青色（还等着你去试炼），
+  // 通关后转成沉下来的金色——地图上也读得出"这里毕业了"
+  if (markers.shrines) {
+    for (const s of markers.shrines) {
+      const [sx, sy] = toScreen(s.x, s.z)
+      if (sx < -12 || sx > size + 12 || sy < -12 || sy > size + 12) continue
+      const r = 3.4 * markerScale
+      ctx.save()
+      ctx.translate(sx, sy)
+      ctx.fillStyle = s.cleared ? 'rgba(240,200,90,0.85)' : 'rgba(120,220,235,0.95)'
+      ctx.strokeStyle = 'rgba(8,20,28,0.85)'
+      ctx.lineWidth = 1.1 * markerScale
+      ctx.beginPath()
+      ctx.moveTo(0, -r)
+      ctx.lineTo(r * 0.86, r * 0.7)
+      ctx.lineTo(-r * 0.86, r * 0.7)
+      ctx.closePath()
+      ctx.fill()
+      ctx.stroke()
+      ctx.restore()
+    }
   }
 
   // 任务目标：金色菱形。它是玩家唯一需要主动去找的东西，所以要画得

@@ -175,6 +175,68 @@ export class KeyboardInput {
     return edge
   }
 
+  // ── 蓄力攻击 ──
+  /** 鼠标按住蓄力的开始时刻（performance.now()）。由 main 的指针事件设置 */
+  mouseChargeStart = 0
+  /** 蓄力是否已触发过一次（持续按住不重复触发，松开后才能再蓄） */
+  private chargeFired = false
+  /** J 键按住的起始时刻 */
+  private keyChargeStart = 0
+
+  /** 蓄力所需时长（秒）。短于它就是普通攻击 */
+  static readonly CHARGE_SECONDS = 0.55
+
+  /**
+   * 蓄力攻击判定。
+   *
+   * 两条输入通道共用一个出口：鼠标按住不动（拖拽转视角不算）或按住 J。
+   * 返回 true 的那帧触发一次旋风斩；松开任意一边后重置。
+   */
+  consumeChargeAttack(now: number): boolean {
+    if (!this.enabled) {
+      this.chargeFired = false
+      this.mouseChargeStart = 0
+      this.keyChargeStart = 0
+      return false
+    }
+    const keyHeld = this.keys.has('KeyJ')
+    if (!keyHeld) this.keyChargeStart = 0
+    else if (this.keyChargeStart === 0) this.keyChargeStart = now
+
+    const mouseHeld = this.mouseChargeStart > 0
+    if (!keyHeld && !mouseHeld) {
+      this.chargeFired = false
+      return false
+    }
+    if (this.chargeFired) return false
+
+    const heldLongEnough =
+      (this.keyChargeStart > 0 && now - this.keyChargeStart >= KeyboardInput.CHARGE_SECONDS * 1000) ||
+      (mouseHeld && now - this.mouseChargeStart >= KeyboardInput.CHARGE_SECONDS * 1000)
+    if (!heldLongEnough) return false
+    this.chargeFired = true
+    return true
+  }
+
+  /** 正在蓄力中（按住但还没到触发时长）：角色要摆蓄力姿势 */
+  isCharging(now: number): boolean {
+    if (!this.enabled || this.chargeFired) return false
+    const keyHeld = this.keys.has('KeyJ') && this.keyChargeStart > 0
+    const mouseHeld = this.mouseChargeStart > 0
+    if (!keyHeld && !mouseHeld) return false
+    // 按住超过 0.2 秒才算"开始蓄力"，否则正常点按的角色会闪一下姿势
+    const t = Math.max(
+      keyHeld ? now - this.keyChargeStart : 0,
+      mouseHeld ? now - this.mouseChargeStart : 0,
+    )
+    return t > 200
+  }
+
+  /** 蓄力的键是否还按着（蓄力斩待发期间被打断时，松手就取消） */
+  get chargeHolding(): boolean {
+    return this.keys.has('KeyJ') || this.mouseChargeStart > 0
+  }
+
   /** 对话期间要把按键状态清干净，避免关掉对话的瞬间角色还在往前跑 */
   clearHeld(): void {
     this.keys.clear()

@@ -9,7 +9,8 @@
  * 与角色控制互斥。
  */
 
-import { Color, Vector2, Vector3 } from 'three'
+import { Box3, Color, Mesh, Vector2, Vector3, type Object3D } from 'three'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { GameLoop } from './core/loop.ts'
 import { PerfHUD, PerfMonitor } from './core/perf.ts'
 import { RenderPipeline } from './render/pipeline.ts'
@@ -40,6 +41,7 @@ import { FireRenderer } from './render/fireRenderer.ts'
 import { IceRenderer } from './render/iceRenderer.ts'
 import { SwimSplash } from './render/swimSplash.ts'
 import { HitSparks, ShockRing, SlashTrail } from './render/combatEffects.ts'
+import { ArrowField, type ArrowHit } from './render/projectiles.ts'
 import { StaminaRing } from './ui/staminaRing.ts'
 import { HealthHud } from './ui/healthHud.ts'
 import { HelpPanel } from './ui/helpPanel.ts'
@@ -48,13 +50,17 @@ import { WorldMap } from './ui/worldMap.ts'
 import { InventoryHud } from './ui/inventoryHud.ts'
 import { Inventory, PickupManager, ITEM_DEFS, type ItemId } from './gameplay/inventory.ts'
 import { loadNature } from './world/vegetation.ts'
-import { WATER_LEVEL, type Heightfield } from './terrain/heightfield.ts'
+import { WATER_LEVEL, Heightfield } from './terrain/heightfield.ts'
+import { RoadNetwork } from './world/roads.ts'
 import { WeaponBag, WEAPON_DEFS, UNARMED, type Moveset } from './gameplay/weapons.ts'
 import { WeaponSpawnField, makeWeaponVisual, DISPLAY_LENGTH } from './world/weaponSpawns.ts'
 import { WeaponHud } from './ui/weaponHud.ts'
 import { WildlifeManager, Animal } from './entities/wildlife.ts'
 import { CampfireField } from './world/campfires.ts'
 import { CookingMenu } from './ui/cookingMenu.ts'
+import { ShrineField, type Shrine } from './world/shrines.ts'
+import type { Enemy } from './entities/enemy.ts'
+import { RegionTitle } from './ui/regionTitle.ts'
 
 const PLAYER_MAX_HEARTS = 6
 /** 玩家无敌帧时长，与 HUD 闪烁的节奏一致 */
@@ -83,6 +89,10 @@ const STATE_LABEL: Record<MoveState, string> = {
   swim: '游泳',
 }
 
+/** 斩击轨迹的稀有度配色：默认冷白，稀有泛蓝，史诗透金 */
+const TRAIL_RARE = new Color(1.4, 2.2, 3.0)
+const TRAIL_EPIC = new Color(2.8, 2.1, 0.9)
+
 /**
  * 主角的模型与配色。
  *
@@ -98,6 +108,25 @@ const PLAYER_RECOLOR: RecolorRule[] = [
   { from: 0xa9674d, to: 0xf6cda4 },
   { from: 0x884835, to: 0xdcae86 },
 ]
+
+/** 盾牌模型加载：KayKit 圆盾，归一化到直径 0.62 米 */
+async function loadShield(): Promise<Object3D | null> {
+  try {
+    const gltf = await new GLTFLoader().loadAsync('/assets/weapons/shield_round.gltf')
+    const shield = gltf.scene
+    const box = new Box3().setFromObject(shield)
+    const raw = Math.max(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z)
+    shield.scale.setScalar(0.62 / Math.max(0.001, raw))
+    shield.traverse((child) => {
+      const mesh = child as Mesh
+      if (mesh.isMesh) mesh.castShadow = true
+    })
+    return shield
+  } catch (err) {
+    console.warn('[角色] 盾牌加载失败：', err)
+    return null
+  }
+}
 
 const START_VIEW_DISTANCE = 320
 /**
@@ -144,12 +173,25 @@ async function boot(): Promise<void> {
 
   setLoadProgress(42, '构建世界…')
 
+  // 道路要在世界装配**之前**修好：植被散布是同步生成的，树一旦落地
+  // 就不会再挪，后补的路会从树林里穿过去。祭坛选址只依赖高度场，
+  // 用同一个种子先建一张"规划图"扫出所有点位，路与世界再一起落地。
+  const planHf = new Heightfield({ seed: 20260930 })
+  const spawn = findFlatSpawn(planHf)
+  const sites = findLandmarkSites(planHf, spawn)
+  const roads = new RoadNetwork()
+  // 营地出发，通向三座祭坛与封印之门——玩家出门就有路可走
+  for (const target of [sites.altars.fire, sites.altars.ice, sites.altars.wind, sites.gate]) {
+    roads.addPath(sites.sage, target)
+  }
+
   const world = new BenchmarkWorld(
     {
       viewDistance: START_VIEW_DISTANCE,
       treeCount: START_TREE_COUNT,
       shadows: true,
       shadowMapSize: 2048,
+      roads,
     },
     nature,
   )
@@ -160,7 +202,6 @@ async function boot(): Promise<void> {
   setLoadProgress(70, '放置角色…')
 
   // ── 角色 ──
-  const spawn = findFlatSpawn(world.heightfield)
   // 水位必须与地形用同一个常量，否则会出现"站在水里但没在游泳"的错位
   const player = new CharacterController({ waterLevel: WATER_LEVEL })
   player.teleportTo(spawn.x, spawn.z, world.heightfield)
@@ -231,7 +272,7 @@ async function boot(): Promise<void> {
   // 地标位置按地形条件现场扫描：地形是程序生成的，写死坐标迟早会撞上
   // "祭坛悬在半空"。扫描结果同时决定了玩家的路线——冰之祭坛在水边、
   // 风之祭坛在最高处，能不能到取决于有没有对应的能力
-  const sites = findLandmarkSites(world.heightfield, spawn)
+  // 地标选址在世界装配前就用同种子高度场扫好了（为了修路），直接用
   const landmarks = new LandmarkField(world.heightfield, nature, sites, world.obstacles)
   world.scene.add(landmarks.group)
   const quest = new Quest(sites)
@@ -284,6 +325,37 @@ async function boot(): Promise<void> {
   campfires.populate(world.heightfield, nature, { x: sites.sage.x, z: sites.sage.z }, 4)
 
   const cookingMenu = new CookingMenu()
+
+  // ── 神庙：四座试炼场守着四个方向 ──
+  const shrines = new ShrineField()
+  world.scene.add(shrines.group)
+  shrines.populate(world.heightfield, nature, new Vector3(spawn.x, 0, spawn.z), world.obstacles)
+  /** 进行中的神庙挑战：哪座庙、这一波刷出来的怪 */
+  let shrineChallenge: { shrine: Shrine; waveEnemies: Enemy[] } | null = null
+
+  /** 刷一波神庙守卫：从四根柱子的位置现身 */
+  const spawnShrineWave = (shrine: Shrine): void => {
+    const kinds = shrines.waveOf(shrine)
+    const positions = kinds.map((_, i) => {
+      const a = (i / kinds.length) * Math.PI * 2 + Math.PI / 4
+      return {
+        x: shrine.position.x + Math.cos(a) * 3.4,
+        z: shrine.position.z + Math.sin(a) * 3.4,
+      }
+    })
+    const spawned: Enemy[] = []
+    kinds.forEach((kind, i) => {
+      // 神庙守卫不恋战也不逃跑：活动范围锁死在神庙周围
+      spawned.push(
+        ...enemies.spawnAtPositions(world.heightfield, [positions[i]], kind, {
+          aggroRange: 40,
+          leashRange: 16,
+        }),
+      )
+    })
+    shrineChallenge = { shrine, waveEnemies: spawned }
+    toast(`${shrine.name} 第 ${shrine.wave + 1} 波守卫现身`)
+  }
 
   const dialogue = new DialogueBox()
   const objectiveBanner = new ObjectiveBanner()
@@ -342,6 +414,10 @@ async function boot(): Promise<void> {
   const hitSparks = new HitSparks()
   const slashTrail = new SlashTrail()
   const shockRing = new ShockRing()
+  const arrows = new ArrowField()
+  const arrowHits: ArrowHit[] = []
+  const arrowStart = new Vector3()
+  const hitDir = new Vector3()
   const sfx = new Sfx()
 
   // 浏览器的自动播放策略要求音频在用户手势里解锁，而且要一次就够。
@@ -359,6 +435,7 @@ async function boot(): Promise<void> {
   world.scene.add(hitSparks.group)
   world.scene.add(slashTrail.object)
   world.scene.add(shockRing.object)
+  world.scene.add(arrows.group)
   // 把火堆当作滑翔的上升气流来源
   player.updraftSource = elements
   // 地形之上还有两类额外表面：结冰的水面，以及石头/树桩/倒木的顶面。
@@ -387,6 +464,7 @@ async function boot(): Promise<void> {
 
   // 鼠标短按攻击，拖拽仍然是转视角。用「按下到抬起的时长 + 位移」
   // 区分两者：只要移动超过几像素就认定用户在拖视角，不触发攻击。
+  // 按住不动则进入蓄力——蓄力斩由 input.consumeChargeAttack 在循环里判
   let pointerDownAt = 0
   let pointerDownX = 0
   let pointerDownY = 0
@@ -395,18 +473,50 @@ async function boot(): Promise<void> {
     pointerDownAt = performance.now()
     pointerDownX = e.clientX
     pointerDownY = e.clientY
+    input.mouseChargeStart = performance.now()
+  })
+  canvas.addEventListener('pointermove', (e) => {
+    // 拖动起来就不是蓄力了——那是在转视角
+    if (input.mouseChargeStart > 0 && pointerDownAt > 0) {
+      if (Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 8) {
+        input.mouseChargeStart = 0
+      }
+    }
   })
   canvas.addEventListener('pointerup', (e) => {
     if (e.button !== 0) return
+    input.mouseChargeStart = 0
     const held = performance.now() - pointerDownAt
     const moved = Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY)
     if (held < 260 && moved < 6) input.attackQueued = true
+  })
+
+  // ── 右键格挡：举盾 ──
+  // 塞尔达的盾挡：正面来袭的伤害完全格掉，代价是移动变慢、不能攻击。
+  // 右键的浏览器菜单要拦掉，不然玩家里昂盾时会弹菜单
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault())
+  let blocking = false
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button === 2 && mode === 'play' && !dialogue.isOpen && !cookingMenu.isOpen) {
+      blocking = true
+      avatar.setShieldRaised?.(true)
+    }
+  })
+  window.addEventListener('pointerup', (e) => {
+    if (e.button === 2 && blocking) {
+      blocking = false
+      avatar.setShieldRaised?.(false)
+    }
   })
 
   let respawning = false
   /** 连击段数与上次出招时刻（游戏内秒，用 elementElapsed 这个一直在走的钟） */
   let comboIndex = 0
   let lastAttackAt = -10
+  /** 本招是不是蓄力旋风斩（参数被临时改过，收招后要恢复） */
+  let chargedSwing = false
+  /** 蓄力到点的时刻（0 = 无待发）。到点后在 0.9s 窗口内手空即放 */
+  let chargePendingAt = 0
   /** 攻击目标复用数组：敌人 + 野兽，每帧重建但不再分配 */
   const attackTargets: AttackTarget[] = []
   const handleDeath = (): void => {
@@ -437,10 +547,51 @@ async function boot(): Promise<void> {
     }, 1600)
   }
 
+  /**
+   * 完美闪避（Flurry Rush）的剩余时间。
+   *
+   * 敌人的攻击落下的瞬间玩家正在闪避无敌帧里——这一帧不受伤，
+   * 而是进入子弹时间：世界慢下来、玩家保持原速，反打一波。
+   */
+  let flurryTimer = 0
+  const FLURRY_SECONDS = 1.6
+  const FLURRY_SCALE = 0.28
+  const FLURRY_COLOR = new Color(2.2, 2.5, 3.0)
+
   const onDamagePlayer = (amount: number, fromPos: Vector3): void => {
     if (respawning) return
+    // 料理防御增益：伤害打折（倍率可叠加式的最小 1 结算）
+    if (defenseBuff < 1) amount = Math.max(1, Math.round(amount * defenseBuff))
+    // 格挡：正面来袭的伤害被盾完全挡掉。盾不是万能的——侧后方
+    // 的攻击挡不住，所以格挡时要面朝威胁，这是它的操作含量
+    if (blocking && !player.isDodging) {
+      const dx = fromPos.x - player.position.x
+      const dz = fromPos.z - player.position.z
+      const len = Math.hypot(dx, dz) || 1
+      const facing = Math.sin(player.yaw) * (dx / len) + Math.cos(player.yaw) * (dz / len)
+      if (facing > 0.35) {
+        sfx.block()
+        hitSparks.spawn(
+          player.position.x + Math.sin(player.yaw) * 0.7,
+          player.position.y + 1.1,
+          player.position.z + Math.cos(player.yaw) * 0.7,
+        )
+        return
+      }
+    }
     // 闪避的无敌帧：这段时间内完全免疫，连击退都不吃
-    if (player.isInvulnerable) return
+    if (player.isInvulnerable) {
+      // 无敌帧里被命中 = 完美闪避。判定的本质是"攻击落下时你刚好
+      // 在滚"，这正是塞尔达 Flurry Rush 的判定方式
+      if (flurryTimer <= 0 && player.isDodging) {
+        flurryTimer = FLURRY_SECONDS
+        sfx.perfect()
+        shockRing.fire(player.position.x, player.position.y, player.position.z, 3.6, FLURRY_COLOR)
+        flurryVignette(true)
+        toast('完美闪避！')
+      }
+      return
+    }
     if (!playerHealth.damage(amount, PLAYER_INVULN)) return
 
     healthHud.update(playerHealth.current)
@@ -464,6 +615,7 @@ async function boot(): Promise<void> {
   const thirdPerson = new ThirdPersonCamera(world.camera, canvas, world.terrain)
   // 初始朝向：沿相机默认方位看向角色前方
   thirdPerson.snapTo(player.position)
+  const regionTitle = new RegionTitle()
 
   const input = new KeyboardInput()
   const fly = new FlyController(world.camera, canvas, world.terrain)
@@ -480,6 +632,11 @@ async function boot(): Promise<void> {
   const iceCoords: number[] = []
 
   // 两张地图共用这一份标记数据，字段在每帧渲染前刷新
+  const shrineMarkers = shrines.shrines.map((s) => ({
+    x: s.position.x,
+    z: s.position.z,
+    cleared: s.state === 'cleared',
+  }))
   const mapMarkers: MinimapMarkers = {
     playerPos: player.position,
     playerYaw: 0,
@@ -487,6 +644,7 @@ async function boot(): Promise<void> {
     fires: fireCoords,
     ice: iceCoords,
     questTarget: null,
+    shrines: shrineMarkers,
   }
   minimap.onClick = () => worldMap.toggle(mapMarkers)
 
@@ -531,10 +689,22 @@ async function boot(): Promise<void> {
       inventory.remove(id)
       playerHealth.heal(def.heal)
       healthHud.update(playerHealth.current)
+      // 料理增益：攻击/防御，计时走游戏内时钟
+      if (def.buff) {
+        if (def.buff.attack) {
+          combat.damageMultiplier = def.buff.attack
+          attackBuffUntil = elementElapsed + def.buff.seconds
+        }
+        if (def.buff.defense) {
+          defenseBuff = def.buff.defense
+          defenseBuffUntil = elementElapsed + def.buff.seconds
+        }
+        buffHudDirty = true
+      }
       toast(
         def.heal >= 99
           ? `吃掉${def.name}，完全恢复！`
-          : `吃掉${def.name}，恢复 ${def.heal} 颗心`,
+          : `吃掉${def.name}，恢复 ${def.heal} 颗心${def.buff?.attack ? '，攻击提升了' : def.buff?.defense ? '，身体硬朗了' : ''}`,
       )
       return
     }
@@ -609,7 +779,7 @@ async function boot(): Promise<void> {
   // 异步加载 glTF 角色模型，加载完成后替换掉代码拼的那套外观。
   // 放在 applyMode 之后是因为回调里要读 mode；失败时静默保留原外观，
   // 不影响游玩。
-  ModelAvatar.load(PLAYER_MODEL, PLAYER_RECOLOR).then((model) => {
+  ModelAvatar.load(PLAYER_MODEL, PLAYER_RECOLOR, 'player-model', 0xe8c66a).then((model) => {
     if (!model) return
     world.scene.remove(avatar.object)
     avatar.dispose()
@@ -618,6 +788,10 @@ async function boot(): Promise<void> {
     world.scene.add(model.object)
     // 新外观上没有武器：重新挂一次当前武器
     syncWeapon()
+    // 盾牌也挂上：平时背在背后，格挡时上手
+    void loadShield().then((shield) => {
+      if (shield) model.setShield(shield)
+    })
     console.log(`[角色] 已切换到 glTF 模型，可用动画 ${model.animationCount} 段`)
   })
 
@@ -787,6 +961,12 @@ async function boot(): Promise<void> {
         const mushroomQuest = sideQuests.byNpc('sage')
         if (mushroomQuest && sideQuests.stateOf(mushroomQuest.id, hasItem) === 'unmet') {
           pages.push(mushroomQuest.lines.offer[0])
+        } else if (shrines.toSave().length < 2) {
+          // 前期玩家最缺的是血上限：指给他神庙的方向
+          pages.push({
+            speaker: '贤者',
+            text: '荒野的四个方向各立着一座神庙，光柱直冲天际。通过试炼的人会得到祝福——你的心会变得更强韧。',
+          })
         } else {
           pages.push({
             speaker: '贤者',
@@ -832,6 +1012,26 @@ async function boot(): Promise<void> {
 
   /** 剩余顿帧时间 */
   let hitStop = 0
+
+  // ── 料理增益状态 ──
+  /** 攻击增益的结束时刻（游戏内秒）；damageMultiplier 挂在 combat 上 */
+  let attackBuffUntil = 0
+  /** 防御增益（受伤倍率）与结束时刻 */
+  let defenseBuff = 1
+  let defenseBuffUntil = 0
+  /** buff 条需要重绘 */
+  let buffHudDirty = true
+  /** buff 倒计时刷新节流 */
+  let buffTick = 0.5
+  const buffHud = document.createElement('div')
+  buffHud.id = 'buff-hud'
+  buffHud.style.cssText = [
+    'position:fixed', 'left:14px', 'top:184px', 'z-index:55',
+    'display:flex', 'gap:8px', 'pointer-events:none',
+    'font:12px/1.4 -apple-system,"PingFang SC",system-ui,sans-serif',
+    'text-shadow:0 1px 3px rgba(0,0,0,0.7)',
+  ].join(';')
+  document.body.appendChild(buffHud)
 
   /** 电击：站在水里放一道电流，把周围水中的敌人一并放倒 */
   const SHOCK_RANGE = 12
@@ -1035,6 +1235,8 @@ async function boot(): Promise<void> {
     sideQuests: sideQuests.toSave(),
     weapons: weaponBag.toSave(),
     weaponSpawnsTaken: weaponSpawns.toSave(),
+    shrines: shrines.toSave(),
+    maxHearts: playerHealth.max,
   })
 
   // 读档。放在这里而不是开头，是因为它要动的东西（角色、背包、地图标记）
@@ -1056,6 +1258,14 @@ async function boot(): Promise<void> {
     weaponBag.restore(d.weapons)
     if (d.weaponSpawnsTaken) weaponSpawns.restore(d.weaponSpawnsTaken)
     syncWeapon()
+    // 神庙与心之容器：旧档没有这两项就保持初始
+    if (d.shrines) shrines.restore(d.shrines)
+    if (typeof d.maxHearts === 'number' && d.maxHearts > PLAYER_MAX_HEARTS) {
+      playerHealth.max = d.maxHearts
+      healthHud.setMax(d.maxHearts)
+      playerHealth.set(Math.min(d.player.health, d.maxHearts))
+      healthHud.update(playerHealth.current)
+    }
     thirdPerson.snapTo(player.position)
     console.log(
       `[存档] 已读取：阶段 ${d.quest.stage}，封印 ${d.quest.seals.length}/3，游玩 ${formatPlaytime(d.playtime)}`,
@@ -1083,10 +1293,25 @@ async function boot(): Promise<void> {
         hitStop = Math.max(0, hitStop - dt)
         worldDt = dt * HIT_STOP_SCALE
       }
+      // 完美闪避的子弹时间：世界慢、玩家不慢。两个减速取更强的那个，
+      // 玩家自己的时间轴单独算——这就是"敌人慢动作、我照常输出"
+      if (flurryTimer > 0) {
+        flurryTimer = Math.max(0, flurryTimer - dt)
+        worldDt = Math.min(worldDt, dt * FLURRY_SCALE)
+        if (flurryTimer <= 0) flurryVignette(false)
+      }
+      const playerDt = flurryTimer > 0 ? dt : worldDt
 
       if (autopilot.isRunning) {
         // 巡检接管相机，角色保持静止
       } else if (mode === 'play') {
+        // 开场镜头：玩家一动就交出控制权
+        if (introState.active) {
+          const mv = input.read()
+          if (mv.forward !== 0 || mv.right !== 0 || mv.jump || introState.t > 2.6) {
+            introState.active = false
+          }
+        }
         // E 键：翻对话页 / 开宝箱 / 开火做饭 / 和 NPC 搭话。
         // 宝箱排在最前——箱子就在脚边时，玩家按 E 想开的是箱子；
         // 锅排在 NPC 前——站在锅边想做饭，不想听贤者讲道理
@@ -1098,12 +1323,33 @@ async function boot(): Promise<void> {
             // 烹饪中：E 不做事（防止误触），关闭用按钮或 Esc
           } else {
             const chest = treasures.nearestUnopened(player.position)
+            const shrineReward = shrines.nearestReward(player.position)
             if (chest) {
               const loot = treasures.open(chest)
               for (const id of loot) inventory.add(id)
               inventoryHud.update(inventory)
               sfx.chest()
               toast(`打开宝箱：${loot.map((id) => ITEM_DEFS[id].name).join('、')}`)
+              save.save(collectSave())
+            } else if (shrineReward) {
+              // 神庙祝福：心之容器 + 一把好武器
+              shrines.openReward(shrineReward)
+              playerHealth.growMax(1)
+              healthHud.setMax(playerHealth.max)
+              healthHud.update(playerHealth.current)
+              // 每座神庙镇着一件不同的宝贝：大剑、战斧、猎弩
+              const bonus =
+                shrineReward.id === 'shrine-nw'
+                  ? 'axe2h'
+                  : shrineReward.id === 'shrine-sw'
+                    ? 'crossbow'
+                    : 'sword2h'
+              weaponBag.add(bonus)
+              if (bonus === 'crossbow') weaponBag.arrows += 8
+              syncWeapon()
+              sfx.chest()
+              sfx.seal()
+              toast(`${shrineReward.name}的祝福：生命上限 +1，获得 ${WEAPON_DEFS[bonus].name}`)
               save.save(collectSave())
             } else {
               const fire = campfires.nearestPot(player.position)
@@ -1159,16 +1405,91 @@ async function boot(): Promise<void> {
             }
           }
 
-          // 攻击先于移动结算：这样本帧就能应用"出招时减速"
-          const attackTrigger = input.consumeAttack()
+          // 当前武器是不是远程（弩）：远程时左键是放箭，没有近战连击与蓄力
+          const shootMode = weaponBag.currentDef?.moveset === 'shoot'
+
+          // ── 蓄力斩：按住攻击键到点自动放。360° 横扫、伤害加成 ──
+          // 到点那一刻普攻往往还没收招（按下瞬间普攻已出手），
+          // 所以用待发窗口：到点后 0.9 秒内手一空就放。不能"松手取消"——
+          // 重武器普攻要 0.85 秒才收招，玩家等不到那一刻就松手了
+          if (!blocking && !shootMode && input.consumeChargeAttack(performance.now())) chargePendingAt = elementElapsed
+          if (chargePendingAt > 0 && elementElapsed - chargePendingAt > 0.9) chargePendingAt = 0
+          if (chargePendingAt > 0 && !chargedSwing && !combat.isBusy) {
+            chargePendingAt = 0
+            chargedSwing = true
+            const def = weaponBag.currentDef
+            combat.config.arcRadians = Math.PI * 2 // 全向
+            combat.config.damage = Math.max(1, Math.round((def?.damage ?? UNARMED.damage) * 1.8))
+            combat.config.duration = 0.72
+            combat.config.hitMoment = 0.4
+            combat.config.windup = 0.26
+            combat.config.range = (def?.range ?? UNARMED.range) + 0.5
+            combat.config.knockbackForce = (def?.knockback ?? UNARMED.knockback) + 4
+            comboIndex = 3 // 连击表的第 4 段是旋风斩动画
+            lastAttackAt = elementElapsed
+            input.attackQueued = true
+            sfx.spin()
+          }
+
+          // 攻击先于移动结算：这样本帧就能应用"出招时减速"。
+          // 格挡时不能攻击——盾举着的时候挥不了剑（输入仍要消费掉，
+          // 否则松开盾的瞬间会把憋着的那刀放出去）
+          const wantAttack = input.consumeAttack()
+          let attackTrigger = blocking ? false : wantAttack
+
+          // ── 弩：装备远程武器时，左键是射箭而不是挥砍 ──
+          // combat 仍然进入 attacking（驱动拉弦动画与节奏），
+          // 但近战扇形被关掉——命中由箭矢的抛物线轨迹结算
+          if (shootMode && wantAttack && !blocking && !combat.isBusy) {
+            if (weaponBag.arrows <= 0) {
+              toast('箭用完了——野外的箭捆可以捡')
+              sfx.blip()
+            } else {
+              weaponBag.arrows--
+              weaponHud.update(weaponBag)
+              combat.config.range = 0.01
+              combat.config.arcRadians = 0
+              attackTrigger = true
+              // 面向相机正对的方向放箭，俯仰角跟着镜头走
+              const camYaw = thirdPerson.yaw
+              player.yaw = camYaw
+              arrowStart
+                .set(
+                  player.position.x + Math.sin(camYaw) * 0.5,
+                  player.position.y + 1.35,
+                  player.position.z + Math.cos(camYaw) * 0.5,
+                )
+              // 箭以固定小仰角离弦：第三人称的相机俯角不能拿来当
+              // 射角（默认 0.32 的俯视会把箭直接压进脚边的地里），
+              // 下坠交给重力，瞄准交给玩家抬高视角的直觉
+              arrows.fire(arrowStart, camYaw, 0.035)
+              sfx.shoot()
+              // 弩也会坏：射击耗耐久
+              if (weaponBag.consumeDurability() === 'broken') {
+                sfx.shatter()
+                toast('猎手弩散架了！')
+                syncWeapon()
+              }
+              weaponHud.update(weaponBag)
+            }
+          }
           if (attackTrigger && !combat.isBusy) {
             // 连击：上一招收手后短时间内再出手，段数 +1，动画随之轮换。
             // 隔太久就从第一段重新开始——连击的手感来自"接得上"
             const now = elementElapsed
             comboIndex = now - lastAttackAt < 1.25 ? (comboIndex + 1) % 3 : 0
             lastAttackAt = now
-            // 出招瞬间亮一道弧光，命中判定在后面几帧才发生
-            slashTrail.start(player.position.x, player.position.z, player.yaw, true)
+            // 出招瞬间亮一道弧光，命中判定在后面几帧才发生。
+            // 弧光颜色跟着武器稀有度走：白→蓝→金
+            const rarity = weaponBag.currentDef?.rarity
+            slashTrail.start(
+              player.position.x,
+              player.position.y,
+              player.position.z,
+              player.yaw,
+              true,
+              rarity === 'epic' ? TRAIL_EPIC : rarity === 'rare' ? TRAIL_RARE : undefined,
+            )
             sfx.swing()
           }
           // 攻击目标 = 敌人 + 野兽。两者都实现了 AttackTarget，
@@ -1176,7 +1497,28 @@ async function boot(): Promise<void> {
           attackTargets.length = 0
           for (const e of enemies.alive) attackTargets.push(e)
           for (const a of wildlife.alive) attackTargets.push(a)
-          const hits = combat.update(worldDt, player.position, player.yaw, attackTrigger, attackTargets)
+          const hits = combat.update(playerDt, player.position, player.yaw, attackTrigger, attackTargets)
+          // 蓄力斩收招后恢复当前武器的普通参数
+          if (chargedSwing && !combat.attacking) {
+            chargedSwing = false
+            syncWeapon()
+          }
+
+          // ── 箭矢飞行与命中结算 ──
+          // 箭在命中帧前就已离弦，所以每帧都推进，不等出招节奏
+          arrows.update(worldDt, world.heightfield, attackTargets, arrowHits)
+          for (const hit of arrowHits) {
+            const dmg = weaponBag.currentDef?.moveset === 'shoot' ? weaponBag.currentDef.damage : 2
+            hitDir.set(
+              hit.target.position.x - player.position.x,
+              0,
+              hit.target.position.z - player.position.z,
+            ).normalize()
+            hit.target.onHit(dmg, hitDir, 5)
+            hitSparks.spawn(hit.point.x, hit.point.y, hit.point.z)
+            sfx.hit()
+            hitStop = HIT_STOP_SECONDS
+          }
           if (hits.length > 0) {
             // 命中帧：火花、顿帧、音效一股脑在这一帧放出来
             hitStop = HIT_STOP_SECONDS
@@ -1197,9 +1539,10 @@ async function boot(): Promise<void> {
             }
             weaponHud.update(weaponBag)
           }
-          player.speedMultiplier = combat.moveFactor
+          // 格挡时走得慢：举盾移动是小碎步
+          player.speedMultiplier = combat.moveFactor * (blocking ? 0.4 : 1)
 
-          player.update(worldDt, input.read(), thirdPerson.forward, thirdPerson.right, world.heightfield)
+          player.update(playerDt, input.read(), thirdPerson.forward, thirdPerson.right, world.heightfield)
           playerHealth.update(dt)
         } else {
           // 对话期间只冻结角色，不冻结世界：敌人照常行动、火照常烧，
@@ -1209,13 +1552,15 @@ async function boot(): Promise<void> {
         }
 
         thirdPerson.update(worldDt, player.position)
-        avatar.update(player.position, player.yaw, worldDt, {
+        avatar.update(player.position, player.yaw, playerDt, {
           grounded: player.grounded,
           speed: talking ? 0 : player.horizontalSpeed,
           state: talking ? 'ground' : player.state,
           attackProgress: combat.attacking ? combat.progress : 0,
           attacking: combat.attacking,
           attackCombo: comboIndex,
+          charging: !blocking && input.isCharging(performance.now()) && !combat.isBusy,
+          blocking,
           dodging: player.isDodging,
           invulnRatio: playerHealth.isInvulnerable
             ? Math.max(0, 1 - playerHealth.sinceDamage / PLAYER_INVULN)
@@ -1223,10 +1568,12 @@ async function boot(): Promise<void> {
         })
         staminaRing.update(player.stamina.ratio, player.stamina.draining)
 
-        // 交互提示：宝箱 > 锅 > NPC，与按键处理同一个优先级
+        // 交互提示：宝箱 > 神庙奖励 > 锅 > NPC，与按键处理同一个优先级
         if (!talking) {
           if (treasures.nearestUnopened(player.position)) {
             interactPrompt.show('按 E 打开宝箱')
+          } else if (shrines.nearestReward(player.position)) {
+            interactPrompt.show('按 E 接受神庙的祝福')
           } else if (campfires.nearestPot(player.position)) {
             interactPrompt.show('按 E 生火做饭')
           } else {
@@ -1255,7 +1602,7 @@ async function boot(): Promise<void> {
       enemies.update(worldDt, player.position, world.heightfield, onDamagePlayer, world.camera)
 
       // ── 野兽 ──
-      wildlife.update(worldDt, player.position, world.heightfield, onDamagePlayer)
+      wildlife.update(worldDt, player.position, world.heightfield, onDamagePlayer, world.obstacles)
       // 尸体停留一会儿再化成掉落物：猎物倒下的瞬间玩家要知道"它死了"，
       // 立刻消失会读成"它不见了"
       for (const corpse of wildlife.collectCorpses()) {
@@ -1270,23 +1617,59 @@ async function boot(): Promise<void> {
         }
       }
 
-      // ── 武器拾取：走近插着的武器自动拔起 ──
+      // ── 武器拾取：走近插着的武器自动拔起；箭捆则是弹药补给 ──
       const pickedWeapon = weaponSpawns.update(worldDt, player.position)
       if (pickedWeapon && mode === 'play') {
-        const def = WEAPON_DEFS[pickedWeapon]
-        const { replaced } = weaponBag.add(pickedWeapon)
-        syncWeapon()
-        sfx.pickup()
-        toast(
-          replaced
-            ? `捡起 ${def.name}（${WEAPON_DEFS[replaced.id].name} 被丢下了）`
-            : `捡起 ${def.name} —— ${def.desc}`,
-        )
-        save.save(collectSave())
+        if (pickedWeapon === 'arrow_bundle') {
+          weaponBag.arrows += 5
+          weaponHud.update(weaponBag)
+          sfx.pickup()
+          toast('捡起一捆箭（+5）')
+          save.save(collectSave())
+        } else {
+          const def = WEAPON_DEFS[pickedWeapon]
+          const { replaced } = weaponBag.add(pickedWeapon)
+          syncWeapon()
+          sfx.pickup()
+          toast(
+            replaced
+              ? `捡起 ${def.name}（${WEAPON_DEFS[replaced.id].name} 被丢下了）`
+              : `捡起 ${def.name} —— ${def.desc}`,
+          )
+          save.save(collectSave())
+        }
       }
 
       // 篝火火焰脉动
       campfires.update(worldDt)
+
+      // ── 神庙挑战 ──
+      // 站上休眠神庙的石台 → 挑战开始
+      const pendingShrine = shrines.pendingActivation(player.position)
+      if (pendingShrine && !shrineChallenge && mode === 'play') {
+        shrines.activate(pendingShrine)
+        sfx.seal()
+        toast(`${pendingShrine.name}的试炼开始了——击退所有守卫`)
+        spawnShrineWave(pendingShrine)
+      }
+      // 波次推进：这一波全灭 → 下一波；全部打完 → 祝福降临
+      if (shrineChallenge) {
+        const allDead = shrineChallenge.waveEnemies.every((e) => e.health.isDead)
+        if (allDead) {
+          const { shrine } = shrineChallenge
+          shrineChallenge = null
+          if (shrines.advanceWave(shrine)) {
+            sfx.seal()
+            toast(`${shrine.name}的试炼通过！中央出现了祝福宝箱`)
+            save.save(collectSave())
+          } else {
+            // 下一波稍停半拍，让玩家喘口气
+            const s = shrine
+            setTimeout(() => spawnShrineWave(s), 1200)
+          }
+        }
+      }
+      shrines.update(worldDt, elementElapsed)
 
       // ── 掉落 ──
       // 在死亡的那一刻结算，而不是等倒地动画播完——否则玩家要盯着尸体
@@ -1305,6 +1688,17 @@ async function boot(): Promise<void> {
               id,
             )
           })
+          // 精英怪掉落武器：它生前用的那把就插在尸体旁。
+          // 强敌掉好武器是塞尔达的核心循环——让玩家有理由去啃硬骨头
+          if (enemy.kind === 'elite') {
+            const drop = Math.random() < 0.5 ? 'sword2h' : 'axe2h'
+            weaponSpawns.dropAt(
+              enemy.position.x + 0.9,
+              enemy.position.y,
+              enemy.position.z + 0.4,
+              drop,
+            )
+          }
         }
       }
 
@@ -1314,7 +1708,7 @@ async function boot(): Promise<void> {
       // ── 战斗特效 ──
       hitSparks.update(worldDt)
       shockRing.update(worldDt)
-      slashTrail.update(worldDt, player.position.x, player.position.z)
+      slashTrail.update(worldDt, player.position.x, player.position.y, player.position.z)
 
       // ── 剧情与收集品 ──
       treasures.update(worldDt)
@@ -1324,6 +1718,34 @@ async function boot(): Promise<void> {
 
       // ── 元素系统 ──
       elementElapsed += dt
+
+      // 料理增益过期；倒计时 0.5s 刷一次
+      buffTick -= dt
+      if (buffTick <= 0) {
+        buffTick = 0.5
+        buffHudDirty = true
+      }
+      if (attackBuffUntil > 0 && elementElapsed >= attackBuffUntil) {
+        attackBuffUntil = 0
+        combat.damageMultiplier = 1
+        buffHudDirty = true
+      }
+      if (defenseBuffUntil > 0 && elementElapsed >= defenseBuffUntil) {
+        defenseBuffUntil = 0
+        defenseBuff = 1
+        buffHudDirty = true
+      }
+      if (buffHudDirty) {
+        buffHudDirty = false
+        const parts: string[] = []
+        if (attackBuffUntil > elementElapsed) {
+          parts.push(`<span style="color:#ffd27a">⚔ 攻击 ×${combat.damageMultiplier} · ${Math.ceil(attackBuffUntil - elementElapsed)}s</span>`)
+        }
+        if (defenseBuffUntil > elementElapsed) {
+          parts.push(`<span style="color:#9fd0ff">🛡 受伤减半 · ${Math.ceil(defenseBuffUntil - elementElapsed)}s</span>`)
+        }
+        buffHud.innerHTML = parts.join('')
+      }
       // 风向缓慢旋转，火线才会朝不同方向拉长，而不是永远一个朝向
       windDir.set(Math.cos(elementElapsed * 0.03), Math.sin(elementElapsed * 0.03))
       elements.update(worldDt, world.heightfield, windDir)
@@ -1359,9 +1781,24 @@ async function boot(): Promise<void> {
       // 巡检/飞行时是相机。用相机位置会在镜头拉远时让加载中心偏移。
       const focus: Vector3 = mode === 'play' && !autopilot.isRunning ? player.position : world.camera.position
       world.update(worldDt, focus)
+
+      // 区域标题：玩家走进新区域时亮出地名
+      if (mode === 'play') {
+        regionTitle.update(dt, player.position.x, player.position.z, player.position.y)
+      }
     },
     render: (dt) => {
       if (autopilot.isRunning) autopilot.beforeRender(dt)
+
+      // 开场镜头推进：从高空俯瞰滑到肩后
+      if (introState.active) {
+        introState.t += dt
+        const t = Math.min(1, introState.t / 2.4)
+        const k = t * t * (3 - 2 * t)
+        thirdPerson.config.distance = 22 + (6.5 - 22) * k
+        thirdPerson.pitch = 1.1 + (0.32 - 1.1) * k
+        if (t >= 1) introState.active = false
+      }
 
       const objective = quest.objective
 
@@ -1392,6 +1829,10 @@ async function boot(): Promise<void> {
       mapMarkers.fires = fireCoords
       mapMarkers.ice = iceCoords
       mapMarkers.questTarget = objective.target
+      // 神庙通关状态会变化（位置不变），原地更新标志
+      for (let i = 0; i < shrineMarkers.length; i++) {
+        shrineMarkers[i].cleared = shrines.shrines[i].state === 'cleared'
+      }
 
       minimap.update(dt, world.heightfield, mapMarkers)
       if (worldMap.isOpen) worldMap.update(mapMarkers)
@@ -1469,9 +1910,39 @@ async function boot(): Promise<void> {
       setTimeout(() => {
         if (loading) loading.style.display = 'none'
       }, 600)
-      toast('WASD 移动 · Shift 奔跑 · 空格跳跃(空中再按开伞) · 走向陡坡自动攀爬 · 入水自动游泳')
+      // 开场：塞尔达式的"从天上落下来看这个世界"——相机从高空俯冲到
+      // 肩后，同时打出标题。玩家一动（任意移动键）就跳过
+      if (!restored.ok) startIntro()
+      toast('WASD 移动 · 左键挥武器 · 数字键换武器 · 打猎生火做饭 · 空格跳跃/滑翔')
     })
   })
+
+  /** 开场引导镜头。读档回来的老玩家跳过——他已经认识这个世界了 */
+  const introState = { t: 0, active: false }
+  function startIntro(): void {
+    introState.active = true
+    introState.t = 0
+    thirdPerson.config.distance = 22
+    thirdPerson.pitch = 1.1
+
+    const title = document.createElement('div')
+    title.id = 'intro-title'
+    title.style.cssText = [
+      'position:fixed', 'left:50%', 'top:38%', 'transform:translate(-50%,-50%)',
+      'text-align:center', 'z-index:60', 'pointer-events:none',
+      'color:#f2ecd8', 'text-shadow:0 2px 24px rgba(0,0,0,0.8)',
+      'opacity:0', 'transition:opacity 1.4s',
+      'font:300 34px/1.5 -apple-system,"PingFang SC",system-ui,sans-serif',
+      'letter-spacing:0.5em',
+    ].join(';')
+    title.innerHTML = '光之大陆<div style="font-size:13px;letter-spacing:0.3em;opacity:0.75;margin-top:10px">暗蚀降临之后</div>'
+    document.body.appendChild(title)
+    requestAnimationFrame(() => { title.style.opacity = '1' })
+    setTimeout(() => {
+      title.style.opacity = '0'
+      setTimeout(() => title.remove(), 1500)
+    }, 3400)
+  }
 
   // 方便在控制台里手动检查
   /** 运行中替换主角外观。挑模型/调配色时要反复对比，重启一次太慢 */
@@ -1523,6 +1994,17 @@ async function boot(): Promise<void> {
     __wildlife: wildlife,
     __campfires: campfires,
     __cookingMenu: cookingMenu,
+    __shrines: shrines,
+    __spawnShrineWave: spawnShrineWave,
+    __isFlurry: () => flurryTimer > 0,
+    __chargeState: () => ({ pending: chargePendingAt > 0, swing: chargedSwing }),
+    __arrows: arrows,
+    __buffs: () => ({
+      attack: combat.damageMultiplier,
+      attackLeft: Math.max(0, attackBuffUntil - elementElapsed),
+      defense: defenseBuff,
+      defenseLeft: Math.max(0, defenseBuffUntil - elementElapsed),
+    }),
     // 剧情系统：自动化脚本要能推进任务、查地标坐标，不必真的走过去
     __quest: quest,
     __landmarks: landmarks,
@@ -1615,6 +2097,28 @@ function downloadText(text: string, filename: string): void {
   // 立刻 revoke 在部分浏览器会中断下载，延后释放
   setTimeout(() => URL.revokeObjectURL(url), 2000)
   toast(`已导出 ${filename}`)
+}
+
+/**
+ * 子弹时间的屏幕暗角。一层边缘泛蓝的径向渐变，flurry 期间显示——
+ * 画面本身没变（角色动作照常），但"时间慢了"这件事必须有个
+ * 全局视觉信号，否则玩家读不出自己进入了奖励窗口
+ */
+function flurryVignette(on: boolean): void {
+  let el = document.getElementById('flurry-vignette')
+  if (on) {
+    if (el) return
+    el = document.createElement('div')
+    el.id = 'flurry-vignette'
+    el.style.cssText = [
+      'position:fixed', 'inset:0', 'pointer-events:none', 'z-index:70',
+      'background:radial-gradient(ellipse at center, transparent 52%, rgba(120,180,255,0.22) 100%)',
+      'transition:opacity 0.12s',
+    ].join(';')
+    document.body.appendChild(el)
+  } else {
+    el?.remove()
+  }
 }
 
 /** 在页面上展示巡检报告，省得每次都去翻控制台 */

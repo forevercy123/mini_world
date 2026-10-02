@@ -303,12 +303,13 @@ export class Enemy implements AttackTarget {
     //
     // 原来是闪红，但暗红在绿草地上看着像"敌人身上着了火"，而不是"我打中
     // 它了"。白色是纯粹的受击信号，且亮到能压过它本身的贴图颜色。
-    // 数值给到 2 以上是 HDR：走 ACES 色调映射后仍然扎眼，普通白色会被压灰。
+    // 但别给成 HDR 强发光：emissive 过 1.5 之后 bloom 会把整个敌人
+    // 拉成一团人形光雾，连骨架都看不清
     const mat = this.rig.materials[0]
     if (this.flashTimer > 0) {
       this.flashTimer -= dt
       const t = Math.max(0, this.flashTimer / FLASH_DURATION)
-      mat.emissive.setRGB(t * 2.6, t * 2.5, t * 2.3)
+      mat.emissive.setRGB(t * 1.05, t * 1.0, t * 0.92)
     } else {
       mat.emissive.setRGB(0, 0, 0)
     }

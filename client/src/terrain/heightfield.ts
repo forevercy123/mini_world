@@ -46,6 +46,10 @@ export const BIOME_COLORS = {
   rockDark: new Color(0x5a544c),
   snow: new Color(0xe8eef2),
   underwater: new Color(0x8a7f6a),
+  /** 秋色林的地面：落叶铺成的金黄 */
+  autumnGround: new Color(0xb08d42),
+  /** 密林的地面：树冠遮阴下压深的绿 */
+  forestFloor: new Color(0x3d6330),
 }
 
 function smoothstep(edge0: number, edge1: number, x: number): number {
@@ -148,6 +152,63 @@ export class Heightfield {
       h += plateau * 40 * cliffMask
     }
 
+    return this.applyRegions(x, z, h)
+  }
+
+  /**
+   * 宏观塑形：手工规划的区域结构。
+   *
+   * 纯噪声生成的地图"到处都一样乱"——没有哪里是"目的地"。所以噪声
+   * 只负责区域内的细节起伏，大的地貌格局由这里定：
+   *
+   *      北（-z）：雪山，一路抬到 70 米以上
+   *      西（-x）：岩石高原，50 米上下的台地
+   *      东（+x）：森林谷地，压平到 20 米上下
+   *      南（+z）：大湖，压到水面以下
+   *      中央：平原，出生点与营地所在，压平到宜奔跑的 18–26 米
+   *
+   * 推拉用的是"向目标高度 lerp"，区域交界处用 80–120 米的宽过渡带，
+   * 平原来回雪山之间必然路过高原与坡地，不会有一道悬崖把地图切开。
+   */
+  private applyRegions(x: number, z: number, h: number): number {
+    // 各区域掩膜（0 在外 → 1 在内），过渡带宽 80–110 米
+    const north = smoothstep(-90, -200, z) * (1 - smoothstep(140, 260, Math.abs(x)))
+    const west = smoothstep(-100, -210, x) * (1 - smoothstep(0.35, 0.75, Math.abs(z) / 240))
+    const east = smoothstep(105, 215, x) * (1 - smoothstep(0.35, 0.8, Math.abs(z) / 240))
+    const south = smoothstep(115, 225, z) * (1 - smoothstep(0.4, 0.85, Math.abs(x) / 260))
+
+    // 中央平原：离原点越近越平。出生点必须在一块"一眼看得懂"的地上
+    const distC = Math.hypot(x, z)
+    const center = 1 - smoothstep(60, 150, distC)
+    if (center > 0) {
+      const target = 19 + this.fbm(x * 0.6, z * 0.6, 0.004, 2, 0.5) * 7
+      h += (target - h) * center * 0.85
+    }
+
+    // 北部雪山：抬向高山，保留山脊细节（起伏跟着原地形走，不然是一面斜墙）
+    if (north > 0) {
+      const target = 74 + (h - 24) * 0.55
+      h += (target - h) * north * 0.9
+    }
+
+    // 西部高原：台地感——抬到 47 上下，起伏压小
+    if (west > 0) {
+      const target = 47 + (h - 24) * 0.35
+      h += (target - h) * west * 0.85
+    }
+
+    // 东部森林谷地：压向 20–28 米的缓丘
+    if (east > 0) {
+      const target = 23 + (h - 24) * 0.3
+      h += (target - h) * east * 0.85
+    }
+
+    // 南部大湖：沉到水下。湖心最深 5 米，岸边渐出沙滩
+    if (south > 0) {
+      const lakeBed = WATER_LEVEL - 5 + this.fbm(x * 0.8, z * 0.8, 0.006, 2, 0.5) * 3
+      h += (lakeBed - h) * south * 0.92
+    }
+
     return h
   }
 
@@ -206,8 +267,20 @@ const _tmpNormal = new Vector3()
  * 这是一个纯函数且**全局唯一**——地形网格和未来的小地图、贴图烘焙
  * 都必须调它，否则同一块地在不同地方会显示出不同颜色。
  */
-export function shadeVertex(height: number, slope: number, out: Color): Color {
-  const { sand, grassLow, grassHigh, rock, snow, underwater } = BIOME_COLORS
+/**
+ * 顶点着色。
+ *
+ * @param zones 群系染色强度（秋色/密林，各 0–1），由 biome.colorFactors
+ *   给出。可选：不传时按纯海拔分带（老行为，测试脚本还在用）。
+ */
+export function shadeVertex(
+  height: number,
+  slope: number,
+  out: Color,
+  zones?: { autumn: number; forest: number },
+): Color {
+  const { sand, grassLow, grassHigh, rock, snow, underwater, autumnGround, forestFloor } =
+    BIOME_COLORS
 
   // 以水位为基准换算相对高度。用绝对高度标定的话，每次调水位或地形尺度
   // 都要重新标一堆阈值（第一版就因此让半个世界变成了沙滩）。
@@ -219,8 +292,17 @@ export function shadeVertex(height: number, slope: number, out: Color): Color {
     out.copy(sand).lerp(grassLow, smoothstep(0.5, 4, rel))
   } else if (rel < 30) {
     out.copy(grassLow).lerp(grassHigh, smoothstep(4, 30, rel))
+    // 群系染色：秋色地面染成金黄落叶，密林地面压深（树冠遮阴）
+    if (zones) {
+      if (zones.autumn > 0) out.lerp(autumnGround, zones.autumn * 0.72)
+      if (zones.forest > 0) out.lerp(forestFloor, zones.forest * 0.5)
+    }
   } else if (rel < 52) {
     out.copy(grassHigh).lerp(rock, smoothstep(30, 52, rel))
+    // 高草带是秋色区的坡脚，跟着海拔衰减地染一点
+    if (zones && zones.autumn > 0) {
+      out.lerp(autumnGround, zones.autumn * (1 - smoothstep(30, 52, rel)) * 0.5)
+    }
   } else {
     out.copy(rock).lerp(snow, smoothstep(52, 66, rel))
   }

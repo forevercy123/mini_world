@@ -35,7 +35,7 @@ const PICKUP_RADIUS = 1.7
 const BEAM_PULSE = 0.14
 
 export interface WeaponSpawn {
-  id: WeaponId
+  id: SpawnContent
   position: Vector3
   taken: boolean
   root: Group
@@ -45,14 +45,19 @@ export interface WeaponSpawn {
   phase: number
 }
 
+/** 武器点的内容：武器，或者一捆箭（弹药补给） */
+export type SpawnContent = WeaponId | 'arrow_bundle'
+
 /** 各武器插在地上时的展示长度（米）。按武器气质定，不是模型原始尺寸 */
-export const DISPLAY_LENGTH: Record<WeaponId, number> = {
+export const DISPLAY_LENGTH: Record<SpawnContent, number> = {
   branch: 0.62,
   dagger: 0.5,
   sword1h: 0.95,
   axe1h: 0.8,
   sword2h: 1.3,
   axe2h: 1.2,
+  crossbow: 0.7,
+  arrow_bundle: 0.5,
 }
 
 /** 武器 GLB 的共享缓存：同一种武器全图只加载一次 */
@@ -75,14 +80,14 @@ async function loadWeaponModel(url: string): Promise<Object3D | null> {
  * 做一个武器外观实例。模型被缩放归一到指定长度——不同来源的武器
  * 原始尺寸差好几倍，不归一的话匕首会和大剑一样长。
  */
-export function makeWeaponVisual(id: WeaponId, length: number): Object3D | null {
-  const def = WEAPON_DEFS[id]
+export function makeWeaponVisual(id: SpawnContent, length: number): Object3D | null {
+  const modelUrl = id === 'arrow_bundle' ? '/assets/weapons/arrow_bundle.gltf' : WEAPON_DEFS[id].model
   let visual: Object3D | null = null
 
-  if (def.model === null) {
+  if (modelUrl === null) {
     visual = createBranchMesh()
   } else {
-    const cached = modelCache.get(def.model)
+    const cached = modelCache.get(modelUrl)
     if (cached) visual = cached.clone(true)
   }
   if (!visual) return null
@@ -152,63 +157,74 @@ export class WeaponSpawnField {
     for (const def of Object.values(WEAPON_DEFS)) {
       if (def.model) urls.add(def.model)
     }
+    urls.add('/assets/weapons/arrow_bundle.gltf')
     await Promise.all([...urls].map((u) => loadWeaponModel(u)))
 
     let placed = 0
     for (let i = 0; i < sites.length; i++) {
       const id = SPAWN_TABLE[i % SPAWN_TABLE.length]
-      const visual = makeWeaponVisual(id, DISPLAY_LENGTH[id])
-      if (!visual) continue
-
-      const { x, z } = sites[i]
-      const y = hf.height(x, z)
-
-      const root = new Group()
-      root.position.set(x, y, z)
-
-      // 斜插进土：柄朝天、尖朝地，转一个看着像"随手一插"的角度
-      visual.rotation.set(2.62, (i * 1.7) % (Math.PI * 2), 0.16)
-      visual.position.y = 0.62
-      visual.traverse((child) => {
-        const mesh = child as Mesh
-        if (mesh.isMesh) mesh.castShadow = true
-      })
-      root.add(visual)
-
-      // 稀有度光柱。加法混合 + 写 HDR 颜色，bloom 会把它拉成一道光
-      const def = WEAPON_DEFS[id]
-      const beamMat = new MeshBasicMaterial({
-        color: RARITY_GLOW[def.rarity],
-        transparent: true,
-        opacity: 0.32,
-        blending: AdditiveBlending,
-        depthWrite: false,
-      })
-      const beam = new Mesh(beamGeometry(), beamMat)
-      root.add(beam)
-
-      this.group.add(root)
-      this.spawns.push({
-        id,
-        position: new Vector3(x, y, z),
-        taken: false,
-        root,
-        beam,
-        beamMat,
-        phase: i * 1.37,
-      })
-      placed++
+      const y = hf.height(sites[i].x, sites[i].z)
+      if (this.dropAt(sites[i].x, y, sites[i].z, id)) placed++
     }
     return placed
+  }
+
+  /**
+   * 在指定位置插一把武器。
+   *
+   *  populate 用它布置野外武器点，强敌掉落也走这里——精英怪
+   *  倒地时剑插在尸体旁边，和野外捡到的武器是同一个待遇。
+   *  返回 false 表示模型还没加载好（启动早期），调用方可忽略。
+   */
+  dropAt(x: number, y: number, z: number, id: SpawnContent): boolean {
+    const visual = makeWeaponVisual(id, DISPLAY_LENGTH[id])
+    if (!visual) return false
+
+    const root = new Group()
+    root.position.set(x, y, z)
+
+    // 斜插进土：柄朝天、尖朝地，转一个看着像"随手一插"的角度
+    const seed = this.spawns.length
+    visual.rotation.set(2.62, (seed * 1.7) % (Math.PI * 2), 0.16)
+    visual.position.y = 0.62
+    visual.traverse((child) => {
+      const mesh = child as Mesh
+      if (mesh.isMesh) mesh.castShadow = true
+    })
+    root.add(visual)
+
+    // 稀有度光柱。加法混合 + 写 HDR 颜色，bloom 会把它拉成一道光
+    const rarity = id === 'arrow_bundle' ? 'common' : WEAPON_DEFS[id].rarity
+    const beamMat = new MeshBasicMaterial({
+      color: RARITY_GLOW[rarity],
+      transparent: true,
+      opacity: 0.32,
+      blending: AdditiveBlending,
+      depthWrite: false,
+    })
+    const beam = new Mesh(beamGeometry(), beamMat)
+    root.add(beam)
+
+    this.group.add(root)
+    this.spawns.push({
+      id,
+      position: new Vector3(x, y, z),
+      taken: false,
+      root,
+      beam,
+      beamMat,
+      phase: seed * 1.37,
+    })
+    return true
   }
 
   /**
    * 每帧：光柱呼吸 + 检测拾取。
    * @returns 本帧被拾起的武器 id（没有则为 null）
    */
-  update(dt: number, playerPos: Vector3): WeaponId | null {
+  update(dt: number, playerPos: Vector3): SpawnContent | null {
     this.elapsed += dt
-    let picked: WeaponId | null = null
+    let picked: SpawnContent | null = null
 
     for (const s of this.spawns) {
       if (s.taken) continue
@@ -262,14 +278,17 @@ export class WeaponSpawnField {
  * 武器点的种类轮转表。好东西夹在中间，不会开局就撞见大剑，
  * 也不会让迟来的玩家只剩树枝可捡。
  */
-const SPAWN_TABLE: WeaponId[] = [
+const SPAWN_TABLE: SpawnContent[] = [
   'sword1h',
   'branch',
   'dagger',
+  'arrow_bundle',
   'axe1h',
   'branch',
+  'crossbow',
   'sword2h',
   'sword1h',
+  'arrow_bundle',
   'dagger',
   'axe2h',
   'branch',
